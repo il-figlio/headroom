@@ -92,58 +92,6 @@ struct SystemClaudeKeychain: ClaudeKeychain {
     }
 }
 
-/// `claude --version` for the usage request's user agent: run at most once
-/// per launch, only the first known path that holds an executable, bounded
-/// by a short timeout, with a fixed fallback.
-final class ClaudeCLIVersion: @unchecked Sendable {
-    static let fallback = "2.1.0"
-    typealias Runner = @Sendable (URL, [String], BoundedProcess.Limits) -> BoundedProcess.Outcome
-
-    private let lock = NSLock()
-    private var cached: String?
-    private let runner: Runner
-    private let limits: BoundedProcess.Limits
-    private let paths: @Sendable (URL) -> [URL]
-
-    init(runner: @escaping Runner = { BoundedProcess.run($0, arguments: $1, limits: $2) },
-         limits: BoundedProcess.Limits = .init(timeout: 3, killGrace: 1, outputLimit: 4096),
-         candidates: @escaping @Sendable (URL) -> [URL] = { ClaudeCLIVersion.candidates(home: $0) }) {
-        self.runner = runner
-        self.limits = limits
-        self.paths = candidates
-    }
-
-    static func candidates(home: URL) -> [URL] {
-        [home.appendingPathComponent(".local/bin/claude"), home.appendingPathComponent(".claude/local/claude"),
-         URL(fileURLWithPath: "/opt/homebrew/bin/claude"), URL(fileURLWithPath: "/usr/local/bin/claude")]
-    }
-
-    /// Blocking; call from a utility queue. Worst case `timeout + killGrace`, once.
-    func version(home: URL) -> String {
-        lock.lock(); defer { lock.unlock() }
-        if let cached { return cached }
-        var found: String?
-        if let url = paths(home).first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }),
-           case .exited(0, let output) = runner(url, ["--version"], limits) {
-            found = Self.parse(output)
-        }
-        let version = found ?? Self.fallback
-        cached = version
-        return version
-    }
-
-    /// "2.1.280 (Claude Code)" → "2.1.280"; anything that isn't a dotted
-    /// number is rejected so it can't reach a header.
-    static func parse(_ output: Data) -> String? {
-        guard let text = String(data: output, encoding: .utf8),
-              let first = text.split(whereSeparator: \.isWhitespace).first else { return nil }
-        let token = String(first)
-        guard token.count <= 32, token.first?.isNumber == true,
-              token.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == ".") }) else { return nil }
-        return token
-    }
-}
-
 /// What a sign-in change looks like from the outside: file modification
 /// times and the Keychain item's modification date. Gathered without
 /// opening a file or reading a secret.

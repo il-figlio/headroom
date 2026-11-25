@@ -78,18 +78,13 @@ which Headroom doesn't do.
 | Claude (Claude Code sign-in, Keychain) | If that file doesn't exist, the `Claude Code-credentials` item in your login Keychain. Headroom checks that the item exists and when it last changed without reading its contents, and reads the token only to make the usage request. It never shows a Keychain prompt. Turn this off with **Use Claude Code's Keychain sign-in** in Settings → Limits (on by default) | `https://api.anthropic.com/api/oauth/usage` |
 | Claude (Ante single sign-in) | `~/.ante/auth/credentials/oauth/anthropic.json`, Ante's original single-file sign-in, if it exists | `https://api.anthropic.com/api/oauth/usage` |
 | Claude accounts in Ante (for example Personal and Work) | Requires the Ante CLI at `~/.ante/bin/ante`. Headroom lists only the **file names** in `~/.ante/auth/credentials/oauth/anthropic/`, which are the account names. The files themselves aren't opened | No direct connection. Headroom runs `~/.ante/bin/ante usage anthropic/<account> --json`, stops it after 20 seconds, and Ante fetches the usage itself |
-| Claude Code version | Headroom runs `claude --version` from a standard install location (`~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin`, or `/usr/local/bin`), if one exists | None |
 
 Details:
 
 - Each request sends only your sign-in token (and, for Codex, your account
   ID) to the provider that issued it, to ask for your own usage. Nothing
   about your Mac or your other readings is included.
-- The Codex request identifies itself as `Headroom`. To match what the
-  Claude endpoint expects, the Claude request identifies itself with a
-  Claude Code user agent, `claude-cli/<version> (external, cli)`, using the
-  version from `claude --version` (or a recent default if Claude Code isn't
-  found).
+- Both the Codex and the Claude requests identify themselves as `Headroom`.
 - The Keychain is never read in a way that can prompt you: if macOS would
   need to ask for permission, the read fails and Limits shows that Claude
   usage is unavailable. With **Use Claude Code's Keychain sign-in** turned

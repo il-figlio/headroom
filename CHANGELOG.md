@@ -38,6 +38,9 @@ download.
 - Codex sessions stored in dated folders are now picked up by Agents.
 
 ### Changed
+- The Claude usage request identifies itself as `Headroom`, like the Codex
+  request, instead of as the Claude Code CLI, so Headroom no longer runs
+  `claude --version`.
 - Sizes pick their unit from their size everywhere: under 1 GB in MB, 1 TB or
   more in TB, daily disk rates included ("205 MB/day"), and the Trends charts
   label their axis in the unit that fits the largest value.

@@ -62,13 +62,6 @@ private final class FakeHTTP: @unchecked Sendable {
     }
 }
 
-private final class Count: @unchecked Sendable {
-    private let lock = NSLock()
-    private var n = 0
-    var value: Int { lock.lock(); defer { lock.unlock() }; return n }
-    func bump() { lock.lock(); n += 1; lock.unlock() }
-}
-
 private struct Home {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("claude-check-\(UUID().uuidString)")
 
@@ -88,14 +81,8 @@ private let expiredFile = #"{"claudeAiOauth":{"accessToken":"file-old","expiresA
 private let validFile = #"{"claudeAiOauth":{"accessToken":"file-new","expiresAt":4102444800000,"subscriptionType":"max"}}"#
 private let keychainRecord = Data(#"{"claudeAiOauth":{"accessToken":"kc-token","expiresAt":4102444800000,"subscriptionType":"pro"}}"#.utf8)
 
-/// A version probe that never runs a process.
-private func quietVersion(_ runs: Count = Count()) -> ClaudeCLIVersion {
-    ClaudeCLIVersion(runner: { _, _, _ in runs.bump(); return .exited(status: 0, output: Data("9.9.9 (Claude Code)\n".utf8)) },
-                     candidates: { _ in [] })
-}
-
 private func source(_ keychain: FakeKeychain, allowed: Bool = true, http: FakeHTTP = FakeHTTP()) -> ClaudeQuotaSource {
-    ClaudeQuotaSource(keychain: keychain, keychainAllowed: { allowed }, http: http.get, cliVersion: quietVersion())
+    ClaudeQuotaSource(keychain: keychain, keychainAllowed: { allowed }, http: http.get)
 }
 
 // MARK: - Participation and detection
@@ -248,24 +235,18 @@ private func source(_ keychain: FakeKeychain, allowed: Bool = true, http: FakeHT
 
 // MARK: - Request
 
-@Test func usageRequestAsksForModelWindows() async throws {
+@Test func usageRequestAsksForModelWindowsAsHeadroom() async throws {
     let home = Home(); defer { home.remove() }
     home.write(ClaudeQuotaSource.claudeFile, validFile)
-    let runs = Count()
     let http = FakeHTTP()
-    let claude = ClaudeQuotaSource(keychain: FakeKeychain(), keychainAllowed: { false }, http: http.get,
-                                   cliVersion: ClaudeCLIVersion(
-                                       runner: { _, _, _ in runs.bump(); return .exited(status: 0, output: Data("9.9.9 (Claude Code)".utf8)) },
-                                       candidates: { [$0.appendingPathComponent("bin/claude")] }))
-    home.write("bin/claude", "#!/bin/sh\nexit 1\n", executable: true)
-    _ = await claude.fetch(home: home.url)
-    _ = await claude.fetch(home: home.url)
+    _ = await source(FakeKeychain(), allowed: false, http: http).fetch(home: home.url)
     let (url, headers) = try #require(http.requests.first)
     let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
     #expect(components.host == "api.anthropic.com" && components.path == "/api/oauth/usage")
     #expect(components.queryItems == [URLQueryItem(name: "cedar_ember", value: "1")])
-    #expect(headers["User-Agent"] == "claude-cli/9.9.9 (external, cli)")
-    #expect(runs.value == 1, "version probed once per launch")
+    // No override: QuotaHTTP.get sends the same "Headroom" user agent as Codex.
+    #expect(headers["User-Agent"] == nil)
+    #expect(headers["Authorization"] == "Bearer file-new")
 }
 
 @Test func badRequestRetriesWithoutTheQuery() async {
@@ -275,33 +256,6 @@ private func source(_ keychain: FakeKeychain, allowed: Bool = true, http: FakeHT
     let reading = await source(FakeKeychain(), allowed: false, http: http).fetch(home: home.url)
     #expect(http.requests.map { $0.0.query } == ["cedar_ember=1", nil])
     #expect(reading.windows.map(\.label) == ["Week"])
-}
-
-// MARK: - Version probe
-
-@Test func versionProbeTimesOutToTheFallbackQuickly() throws {
-    let home = Home(); defer { home.remove() }
-    home.write("bin/claude", "#!/bin/sh\nsleep 10\n", executable: true)
-    let probe = ClaudeCLIVersion(limits: .init(timeout: 0.3, killGrace: 0.2, outputLimit: 4096),
-                                 candidates: { [$0.appendingPathComponent("bin/claude")] })
-    let start = Date()
-    #expect(probe.version(home: home.url) == ClaudeCLIVersion.fallback)
-    #expect(Date().timeIntervalSince(start) < 3)
-    // Cached for the launch: no second run.
-    let again = Date()
-    #expect(probe.version(home: home.url) == ClaudeCLIVersion.fallback)
-    #expect(Date().timeIntervalSince(again) < 0.1)
-}
-
-@Test func versionProbeSkipsMissingPathsAndRejectsOddOutput() {
-    let runs = Count()
-    let missing = ClaudeCLIVersion(runner: { _, _, _ in runs.bump(); return .timedOut },
-                                   candidates: { _ in [URL(fileURLWithPath: "/nonexistent/claude-\(UUID().uuidString)")] })
-    #expect(missing.version(home: URL(fileURLWithPath: "/nonexistent")) == ClaudeCLIVersion.fallback)
-    #expect(runs.value == 0)
-    #expect(ClaudeCLIVersion.parse(Data("2.1.280 (Claude Code)\n".utf8)) == "2.1.280")
-    #expect(ClaudeCLIVersion.parse(Data("evil\r\nX-Header: 1".utf8)) == nil)
-    #expect(ClaudeCLIVersion.parse(Data()) == nil)
 }
 
 // MARK: - Keychain query shape (fake SecItemCopyMatching)

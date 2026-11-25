@@ -29,7 +29,6 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
     private let keychain: any ClaudeKeychain
     private let keychainAllowed: @Sendable () -> Bool
     private let http: QuotaHTTP.Get
-    private let cliVersion: ClaudeCLIVersion
 
     private let lock = NSLock()
     /// Avoids re-reading the Keychain while the cached token remains valid.
@@ -43,12 +42,10 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
 
     init(keychain: any ClaudeKeychain,
          keychainAllowed: @escaping @Sendable () -> Bool = { QuotaSettings.useClaudeKeychain },
-         http: @escaping QuotaHTTP.Get = { try await QuotaHTTP.get($0, headers: $1) },
-         cliVersion: ClaudeCLIVersion = ClaudeCLIVersion()) {
+         http: @escaping QuotaHTTP.Get = { try await QuotaHTTP.get($0, headers: $1) }) {
         self.keychain = keychain
         self.keychainAllowed = keychainAllowed
         self.http = http
-        self.cliVersion = cliVersion
     }
 
     enum Origin: Sendable, Equatable {
@@ -205,7 +202,6 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
         let headers = [
             "Authorization": "Bearer \(credentials.accessToken)",
             "anthropic-beta": "oauth-2025-04-20",
-            "User-Agent": await userAgent(home: home),
         ]
         do {
             // cedar_ember=1 asks for the per-model weekly windows too.
@@ -238,14 +234,6 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
         } catch {
             return failOther("Network error: \(error.localizedDescription)")
         }
-    }
-
-    private func userAgent(home: URL) async -> String {
-        let probe = cliVersion
-        let version = await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async { continuation.resume(returning: probe.version(home: home)) }
-        }
-        return "claude-cli/\(version) (external, cli)"
     }
 
     private func takeRetry() -> Bool {
