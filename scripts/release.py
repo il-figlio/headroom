@@ -158,6 +158,10 @@ def package(args):
     if not args.local:
         if 'Authority=Developer ID Application:' not in codesign_details(APP):
             raise Failure('Distribution needs a Developer ID build: HEADBOARD_SIGN_IDENTITY=... scripts/sign.sh (or build.sh). Use --local for a test package.')
+        # make_dmg signs the DMG only when an identity is set; without one it
+        # would quietly ship an unsigned DMG that Gatekeeper rejects.
+        if not sign_identity():
+            raise Failure('Set HEADBOARD_SIGN_IDENTITY to the Developer ID identity so the DMG is signed too.')
         credentials = notary_credentials(args.notary_profile)
         if is_stapled(APP):
             step('App already carries a stapled notarization ticket')
