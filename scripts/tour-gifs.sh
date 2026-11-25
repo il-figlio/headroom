@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Rebuild the README's animated tours (docs/panel-tour.gif, docs/settings-tour.gif)
 # from the real views with demo data, like scripts/screenshots.sh. Signs ad hoc
-# unless HEADBOARD_SIGN_IDENTITY says otherwise, so it never touches a keychain.
+# unless HEADROOM_SIGN_IDENTITY says otherwise, so it never touches a keychain.
 # Needs ffmpeg (brew install ffmpeg); nothing else in the build does.
 #
 #   ./scripts/tour-gifs.sh
@@ -10,8 +10,8 @@ cd "${0:A:h:h}"
 command -v ffmpeg >/dev/null || { echo "tour-gifs.sh needs ffmpeg (brew install ffmpeg)" >&2; exit 1; }
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-HEADBOARD_SIGN_IDENTITY="${HEADBOARD_SIGN_IDENTITY:--}" ./scripts/build.sh >/dev/null
-dist/Headboard.app/Contents/MacOS/Headboard --screenshots "$work/renders" --screenshot-variants >/dev/null
+HEADROOM_SIGN_IDENTITY="${HEADROOM_SIGN_IDENTITY:--}" ./scripts/build.sh >/dev/null
+dist/Headroom.app/Contents/MacOS/Headroom --screenshots "$work/renders" --screenshot-variants >/dev/null
 
 # gif <output> <seconds per frame> <render name>...
 # Centers every render on one canvas (largest render plus 24 px each side) in

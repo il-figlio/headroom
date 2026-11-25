@@ -5,7 +5,7 @@
             offline, with a throwaway Sparkle key, then runs every local check.
   package   ZIP + DMG + SHA256SUMS. Without --local the app must be Developer ID
             signed; it is notarized and stapled (App Store Connect API key from
-            HEADBOARD_NOTARY_KEY/_KEY_ID/_ISSUER, or --notary-profile), or must
+            HEADROOM_NOTARY_KEY/_KEY_ID/_ISSUER, or --notary-profile), or must
             already be stapled (scripts/notarize-xcode.py path).
   appcast   Signs the ZIP and writes a signed single-item appcast.xml.
   verify    Checks the app, ZIP, DMG, appcast and SHA256SUMS in dist/releases/<tag>.
@@ -14,7 +14,7 @@
             ./appcast.xml for a commit to main. That commit is what ships the update.
 
 Values come from VERSION and packaging/app.env. Sparkle's sign_update reads the
-EdDSA key from HEADBOARD_SPARKLE_ED_KEY (key text, piped on stdin), --ed-key-file,
+EdDSA key from HEADROOM_SPARKLE_ED_KEY (key text, piped on stdin), --ed-key-file,
 or the login Keychain account in SPARKLE_KEYCHAIN_ACCOUNT.
 """
 import argparse
@@ -47,7 +47,7 @@ ZIP = OUT / f'{APP_NAME}-{VERSION}-universal.zip'
 DMG = OUT / f'{APP_NAME}-{VERSION}.dmg'
 FEED = OUT / 'appcast.xml'
 SUMS = OUT / 'SHA256SUMS'
-TOOLS = ROOT / '.build-headboard/sparkle-tools/bin'
+TOOLS = ROOT / '.build-headroom/sparkle-tools/bin'
 SPARKLE_NS = 'http://www.andymatuschak.org/xml-namespaces/sparkle'
 PUBLIC_URL = f'https://github.com/{REPO}/releases/download/{TAG}/{ZIP.name}'
 LEGACY_URL = re.compile(rf'https://api\.github\.com/repos/{re.escape(REPO)}/releases/assets/\d+')
@@ -79,7 +79,7 @@ def sha256(path):
 
 
 def sign_identity():
-    identity = os.environ.get('HEADBOARD_SIGN_IDENTITY', '')
+    identity = os.environ.get('HEADROOM_SIGN_IDENTITY', '')
     return identity if identity not in ('', '-') else None
 
 
@@ -90,11 +90,11 @@ def codesign_details(path):
 # ---------------------------------------------------------------- notarization
 
 def notary_credentials(profile):
-    names = ('HEADBOARD_NOTARY_KEY', 'HEADBOARD_NOTARY_KEY_ID', 'HEADBOARD_NOTARY_ISSUER')
+    names = ('HEADROOM_NOTARY_KEY', 'HEADROOM_NOTARY_KEY_ID', 'HEADROOM_NOTARY_ISSUER')
     values = [os.environ.get(name, '') for name in names]
     if all(values):
         if not pathlib.Path(values[0]).is_file():
-            raise Failure('HEADBOARD_NOTARY_KEY must be the path to the App Store Connect .p8 key file.')
+            raise Failure('HEADROOM_NOTARY_KEY must be the path to the App Store Connect .p8 key file.')
         return ['--key', values[0], '--key-id', values[1], '--issuer', values[2]]
     if any(values):
         raise Failure('Set all of ' + ', '.join(names) + ' or none of them.')
@@ -140,7 +140,7 @@ def make_dmg():
             '-fs', 'APFS', '-format', 'ULFO', '-ov', DMG)
     identity = sign_identity()
     if identity:
-        keychain = os.environ.get('HEADBOARD_SIGN_KEYCHAIN')
+        keychain = os.environ.get('HEADROOM_SIGN_KEYCHAIN')
         run('codesign', '--force', '--timestamp', '--sign', identity, *(['--keychain', keychain] if keychain else []), DMG)
 
 
@@ -157,11 +157,11 @@ def package(args):
     credentials = None
     if not args.local:
         if 'Authority=Developer ID Application:' not in codesign_details(APP):
-            raise Failure('Distribution needs a Developer ID build: HEADBOARD_SIGN_IDENTITY=... scripts/sign.sh (or build.sh). Use --local for a test package.')
+            raise Failure('Distribution needs a Developer ID build: HEADROOM_SIGN_IDENTITY=... scripts/sign.sh (or build.sh). Use --local for a test package.')
         # make_dmg signs the DMG only when an identity is set; without one it
         # would quietly ship an unsigned DMG that Gatekeeper rejects.
         if not sign_identity():
-            raise Failure('Set HEADBOARD_SIGN_IDENTITY to the Developer ID identity so the DMG is signed too.')
+            raise Failure('Set HEADROOM_SIGN_IDENTITY to the Developer ID identity so the DMG is signed too.')
         credentials = notary_credentials(args.notary_profile)
         if is_stapled(APP):
             step('App already carries a stapled notarization ticket')
@@ -169,8 +169,8 @@ def package(args):
             make_zip()  # notarytool takes a ZIP of the app; the final ZIP is rebuilt after stapling
             notarize(ZIP, credentials, APP)
         else:
-            raise Failure('App is not notarized. Set HEADBOARD_NOTARY_KEY, HEADBOARD_NOTARY_KEY_ID and '
-                          'HEADBOARD_NOTARY_ISSUER, pass --notary-profile, or run scripts/notarize-xcode.py '
+            raise Failure('App is not notarized. Set HEADROOM_NOTARY_KEY, HEADROOM_NOTARY_KEY_ID and '
+                          'HEADROOM_NOTARY_ISSUER, pass --notary-profile, or run scripts/notarize-xcode.py '
                           'upload/export and copy the exported app to dist/ first.')
     step(f'Packaging {ZIP.name}')
     make_zip()
@@ -189,7 +189,7 @@ def package(args):
 def key_source(key_file):
     """sign_update arguments and stdin, plus the private key bytes when known.
     An env secret is piped on stdin so it is never written to disk."""
-    secret = os.environ.get('HEADBOARD_SPARKLE_ED_KEY', '').strip()
+    secret = os.environ.get('HEADROOM_SPARKLE_ED_KEY', '').strip()
     if key_file:
         return ['--ed-key-file', str(key_file)], None, base64.b64decode(pathlib.Path(key_file).read_text().strip())
     if secret:

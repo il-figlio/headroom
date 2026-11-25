@@ -1,8 +1,8 @@
-# Contributing to Headboard
+# Contributing to Headroom
 
 By taking part you agree to the [code of conduct](CODE_OF_CONDUCT.md).
 
-Thanks for taking a look. Headboard aims to stay small, honest, and cheap to
+Thanks for taking a look. Headroom aims to stay small, honest, and cheap to
 run, so changes are welcome when they keep it that way. For a larger change,
 please open an issue first so we can agree on the approach.
 
@@ -10,19 +10,19 @@ please open an issue first so we can agree on the approach.
 
 ```
 Sources/
-├── Headboard/          App layer: AppDelegate, Monitor, PanelView, NotchController, HistoryView
-├── HeadboardCore/      Testable logic: memory, disk, history, agents, quotas (no AppKit UI)
+├── Headroom/          App layer: AppDelegate, Monitor, PanelView, NotchController, HistoryView
+├── HeadroomCore/      Testable logic: memory, disk, history, agents, quotas (no AppKit UI)
 ├── CMemory/           C shim over kernel counters (host_statistics64, proc_pid_rusage, IOPOL)
 └── CSQLite/           Module map exposing the system libsqlite3
 
-Tests/HeadboardCoreTests/   XCTest suite for the core target (needs full Xcode)
-Tests/HeadboardCoreChecks/  Swift Testing checks (run without Xcode via scripts/check.sh)
+Tests/HeadroomCoreTests/   XCTest suite for the core target (needs full Xcode)
+Tests/HeadroomCoreChecks/  Swift Testing checks (run without Xcode via scripts/check.sh)
 scripts/                   Build, sign, test, screenshot, and release scripts
 docs/                      Screenshots and longer documentation
 ```
 
-Anything testable goes in `HeadboardCore`. AppKit and SwiftUI wiring stays
-in `Headboard`.
+Anything testable goes in `HeadroomCore`. AppKit and SwiftUI wiring stays
+in `Headroom`.
 
 ## Build
 
@@ -30,16 +30,16 @@ Requirements: macOS 13 or later and Swift 5.9 or later, from Xcode or the
 Command Line Tools.
 
 ```sh
-./scripts/build.sh    # universal release build → dist/Headboard.app
-open dist/Headboard.app
+./scripts/build.sh    # universal release build → dist/Headroom.app
+open dist/Headroom.app
 ```
 
-Quit any running copy of Headboard before launching a new build.
+Quit any running copy of Headroom before launching a new build.
 
 Source builds are signed with a persistent self-signed identity,
-"Headboard Local", so macOS remembers Keychain permission across rebuilds.
+"Headroom Local", so macOS remembers Keychain permission across rebuilds.
 `scripts/sign.sh` creates it on the first build in its own keychain under
-`~/Library/Application Support/Headboard/signing/`. It never touches your
+`~/Library/Application Support/Headroom/signing/`. It never touches your
 login keychain. Distribution builds use Developer ID signing instead; see
 [docs/releases.md](docs/releases.md).
 
@@ -61,7 +61,7 @@ Use whichever older SDK version you have.
 | Command | What it runs | Needs |
 | --- | --- | --- |
 | `./scripts/verify.sh` | Everything below plus a universal build and a release dry run, with timings. Run before every push. | Command Line Tools or Xcode |
-| `./scripts/check.sh` | Swift Testing checks in `Tests/HeadboardCoreChecks` | Command Line Tools or Xcode |
+| `./scripts/check.sh` | Swift Testing checks in `Tests/HeadroomCoreChecks` | Command Line Tools or Xcode |
 | `./scripts/test.sh` | The full `swift test` suite, including the XCTest tests | Full Xcode |
 | `./scripts/test-quit.sh` | Builds a disposable fixture app and checks Quit and Force Quit against it | Command Line Tools or Xcode |
 
@@ -72,11 +72,11 @@ fixture. Keep it that way.
 Helpful checks against a built app:
 
 ```sh
-dist/Headboard.app/Contents/MacOS/Headboard --diagnose      # live readings to stdout
-dist/Headboard.app/Contents/MacOS/Headboard --capture       # one sample + regenerate log.md
-dist/Headboard.app/Contents/MacOS/Headboard --scan          # run the consumer scan in the terminal
-dist/Headboard.app/Contents/MacOS/Headboard --show-panel    # open the panel at launch
-dist/Headboard.app/Contents/MacOS/Headboard --show-trends   # open the Trends window at launch
+dist/Headroom.app/Contents/MacOS/Headroom --diagnose      # live readings to stdout
+dist/Headroom.app/Contents/MacOS/Headroom --capture       # one sample + regenerate log.md
+dist/Headroom.app/Contents/MacOS/Headroom --scan          # run the consumer scan in the terminal
+dist/Headroom.app/Contents/MacOS/Headroom --show-panel    # open the panel at launch
+dist/Headroom.app/Contents/MacOS/Headroom --show-trends   # open the Trends window at launch
 ```
 
 `./scripts/screenshots.sh` rebuilds the app (signed ad hoc, so no keychain
@@ -86,13 +86,13 @@ panels, light mode, settings, and hover details.
 
 ## Invariants
 
-These properties are what make Headboard trustworthy. Pull requests that
+These properties are what make Headroom trustworthy. Pull requests that
 break them won't be merged.
 
 1. **Never deletes user files.** No cleanup or "optimize" buttons. Sparkle
-   may replace Headboard's own app bundle during an update.
+   may replace Headroom's own app bundle during an update.
 2. **Never quits other apps automatically.** Quit is always user-initiated,
-   and Force Quit always asks first. Sparkle may quit and relaunch Headboard
+   and Force Quit always asks first. Sparkle may quit and relaunch Headroom
    to install an update.
 3. **No full-tree scans on a timer.** Capacity comes from volume attributes
    only. Folder walks are on demand, cancellable, single-threaded, and run
@@ -114,7 +114,7 @@ break them won't be merged.
 9. **Process safety.** Anything that targets a process must revalidate the
    process ID, bundle path, and launch date. Never act on a stale row.
 
-If a change affects what Headboard reads, stores, or sends, update
+If a change affects what Headroom reads, stores, or sends, update
 [PRIVACY.md](PRIVACY.md) in the same pull request.
 
 ## Style
@@ -127,8 +127,8 @@ If a change affects what Headboard reads, stores, or sends, update
   `ALTER TABLE`) and test against a real, populated database.
 - App icons are cached and `NSWorkspace.runningApplications` is read off the
   main thread. Keep it that way.
-- Add tests to `Tests/HeadboardCoreChecks` (Swift Testing) or
-  `Tests/HeadboardCoreTests` for anything in the core target. Prefer fakes
+- Add tests to `Tests/HeadroomCoreChecks` (Swift Testing) or
+  `Tests/HeadroomCoreTests` for anything in the core target. Prefer fakes
   and in-memory stores over timing-dependent tests.
 - Add a line under **Unreleased** in [CHANGELOG.md](CHANGELOG.md) for
   user-visible changes.

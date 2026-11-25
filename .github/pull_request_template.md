@@ -10,11 +10,11 @@
 
 - [ ] `./scripts/verify.sh` passes (or `--quick` for docs-only changes)
 - [ ] `./scripts/test-quit.sh` passes (if Quit or process handling changed)
-- [ ] `./scripts/build.sh` produces a working `dist/Headboard.app`
+- [ ] `./scripts/build.sh` produces a working `dist/Headroom.app`
 - [ ] `--diagnose` and `--capture` still work on a real, populated history database (migrations included)
 - [ ] Panel and notch sizing still fit (`PanelMetrics`) if the UI changed
 - [ ] CHANGELOG.md has a line under **Unreleased** for user-visible changes
-- [ ] PRIVACY.md is updated if this changes what Headboard reads, stores, or sends
+- [ ] PRIVACY.md is updated if this changes what Headroom reads, stores, or sends
 
 ## Invariants
 

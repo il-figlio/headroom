@@ -28,7 +28,7 @@ if xcrun --find xctest >/dev/null 2>&1 && [[ "$(xcode-select -p)" != /Library/De
 else
   print "    XCTest suite: needs full Xcode; Swift Testing covers the core here"
 fi
-step "Universal build (ad-hoc signed)" env HEADBOARD_SIGN_IDENTITY=- ./scripts/build.sh
-[[ -x .build-headboard/sparkle-tools/bin/sign_update ]] || step "Sparkle tools" ./scripts/sparkle-tools.sh
+step "Universal build (ad-hoc signed)" env HEADROOM_SIGN_IDENTITY=- ./scripts/build.sh
+[[ -x .build-headroom/sparkle-tools/bin/sign_update ]] || step "Sparkle tools" ./scripts/sparkle-tools.sh
 step "Release dry run" ./scripts/release.py dry-run
 printf 'verify passed in %.1fs\n' $(( SECONDS - total ))

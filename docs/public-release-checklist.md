@@ -2,8 +2,8 @@
 
 A repeatable checklist for taking a private macOS app repository public with
 downloadable, self-updating releases. Each section lists the generic steps,
-then **Headboard** shows how this repository answers them, as a worked
-example. Copy this file into the next app and replace the Headboard answers.
+then **Headroom** shows how this repository answers them, as a worked
+example. Copy this file into the next app and replace the Headroom answers.
 
 Work through the sections in order. The visibility flip comes last and is
 the only step that can't be undone.
@@ -28,7 +28,7 @@ the only step that can't be undone.
       archive work-in-progress branches; a visibility flip publishes every
       branch and tag.
 
-**Headboard:** `log.md`, `PROGRESS.md`, `DEVLOG.md`, and `verification*.json`
+**Headroom:** `log.md`, `PROGRESS.md`, `DEVLOG.md`, and `verification*.json`
 moved to `.internal/`. Live-machine screenshots and icon concepts were
 removed; the README screenshots come from `--screenshots`, which renders the
 real views with labeled demo data. MIT license; Sparkle's license ships in
@@ -53,10 +53,10 @@ deleted before the flip (see section 4).
       `.github/pull_request_template.md` with the invariants checklist.
 - [ ] Every relative Markdown link resolves (see the check below).
 
-**Headboard:** [README](../README.md), [how it works](how-it-works.md),
+**Headroom:** [README](../README.md), [how it works](how-it-works.md),
 [CHANGELOG](../CHANGELOG.md), [PRIVACY](../PRIVACY.md),
 [SECURITY](../SECURITY.md), [CONTRIBUTING](../CONTRIBUTING.md). The bug
-template asks for the Headboard and macOS versions, Mac model and chip, and
+template asks for the Headroom and macOS versions, Mac model and chip, and
 notch or menu bar placement.
 
 Link check (run from the repository root):
@@ -96,8 +96,8 @@ Read the code, not the old docs. For each item, record the answer in
       "off" means no reads and no requests.
 - [ ] The update check: what it sends, and that any system profile is off.
 
-**Headboard:** no telemetry. History is local SQLite in
-`~/Library/Application Support/Headboard/`, with samples and events kept 30
+**Headroom:** no telemetry. History is local SQLite in
+`~/Library/Application Support/org.headroom.app/`, with samples and events kept 30
 days. Agents is off by default; when on, it reads transcripts read-only,
 keeps only metadata, and lists processes with `/usr/bin/ps`. Limits is
 opt-in on new installs; it reads existing Codex, Claude Code, and Ante
@@ -136,7 +136,7 @@ a GitHub `noreply` address. Force-pushing an orphan branch in place is the
 fallback; GitHub can keep old commits reachable by SHA until its caches are
 purged, so a new repository is cleaner.
 
-**Headboard:** no real secrets in history; the test fixtures use obviously
+**Headroom:** no real secrets in history; the test fixtures use obviously
 fake tokens. History does contain the Developer ID team ID (also visible in
 any signed binary), a Keychain investigation narrative, superseded
 credential-refresh code, screenshots captured on a real desktop, and two
@@ -152,7 +152,7 @@ history and delete that branch.
 - [ ] Tags are `vX.Y.Z` and match the marketing version.
 - [ ] The changelog's **Unreleased** section becomes the release notes.
 
-**Headboard:** today the version and build number are set in
+**Headroom:** today the version and build number are set in
 `scripts/build.sh`. The release pipeline work moves them to a single
 source that the build, release script, and tag check share.
 
@@ -168,8 +168,8 @@ source that the build, release script, and tag check share.
 - [ ] Local builds use a separate identity and are clearly not for
       distribution.
 
-**Headboard:** universal, Developer ID signed with hardened runtime, and
-notarized. Source builds sign with a self-signed "Headboard Local" identity
+**Headroom:** universal, Developer ID signed with hardened runtime, and
+notarized. Source builds sign with a self-signed "Headroom Local" identity
 kept in its own keychain. See [releases.md](releases.md).
 
 ## 7. Public update feed
@@ -184,7 +184,7 @@ kept in its own keychain. See [releases.md](releases.md).
 - [ ] Users can turn off automatic checks and automatic installation.
 - [ ] Existing installs on the old (private) feed have a path to the new one.
 
-**Headboard:** Sparkle 2, pinned. Signed feed required, archive verification
+**Headroom:** Sparkle 2, pinned. Signed feed required, archive verification
 before extraction, system profile off, remote release notes off. Builds up
 to 0.8.0 read a private feed through the GitHub CLI login; the public
 release replaces that with an unauthenticated feed.
@@ -207,7 +207,7 @@ has a Mac worker, Mac apps verify and release on the release Mac.
 - [ ] The release script refuses to overwrite a published release, and the
       appcast is committed only after the release assets exist.
 
-**Headboard:** `./scripts/verify.sh` passes in about 61 s on this Mac (checks
+**Headroom:** `./scripts/verify.sh` passes in about 61 s on this Mac (checks
 4 s, universal build 35 s, dry run 21 s); the hosted run it replaced took
 about 4 min. Releases: `docs/releases.md`.
 
@@ -221,9 +221,9 @@ about 4 min. Releases: `docs/releases.md`.
 - [ ] A documented release step bumps the cask (`scripts/render-cask.py`).
 - [ ] Mark the README's Homebrew line "coming soon" until the tap works.
 
-**Headboard:** `brew install --cask il-figlio/tap/headboard`, marked coming
+**Headroom:** `brew install --cask il-figlio/tap/headroom`, marked coming
 soon in the README. The `zap` stanza should remove
-`~/Library/Application Support/Headboard` and the `org.headroom.app`
+`~/Library/Application Support/org.headroom.app` and the `org.headroom.app`
 preferences.
 
 ## 10. Clean-machine QA
@@ -240,7 +240,7 @@ its development builds.
 - [ ] Uninstall steps in the README remove everything.
 - [ ] Intel and Apple Silicon, and the oldest supported macOS, if possible.
 
-**Headboard:** check both notch and menu bar placement, Agents and Limits
+**Headroom:** check both notch and menu bar placement, Agents and Limits
 off on first launch, Limits off means no requests, and an update from the
 first public build to the next.
 
@@ -258,5 +258,5 @@ first public build to the next.
       offers private reporting.
 - [ ] Announce only after the signed-out checks pass.
 
-**Headboard:** the old private v0.8.0 draft release should be deleted, since
+**Headroom:** the old private v0.8.0 draft release should be deleted, since
 it was built for the private update feed.

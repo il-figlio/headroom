@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in Headboard doesn't work as expected.
+description: Something in Headroom doesn't work as expected.
 labels: [bug]
 body:
   - type: markdown
@@ -24,10 +24,10 @@ body:
     validations:
       required: false
   - type: input
-    id: headboard-version
+    id: headroom-version
     attributes:
-      label: Headboard version
-      description: Shown under the title in Headboard's panel, or in About Headboard.
+      label: Headroom version
+      description: Shown under the title in Headroom's panel, or in About Headroom.
       placeholder: "0.8.0"
     validations:
       required: true
@@ -48,7 +48,7 @@ body:
   - type: dropdown
     id: placement
     attributes:
-      label: Where does Headboard appear?
+      label: Where does Headroom appear?
       options:
         - Notch
         - Menu bar
@@ -58,7 +58,7 @@ body:
   - type: dropdown
     id: install
     attributes:
-      label: How did you install Headboard?
+      label: How did you install Headroom?
       options:
         - GitHub Releases download
         - Homebrew
@@ -70,6 +70,6 @@ body:
     attributes:
       label: Screenshots or logs
       description: |
-        Optional. Output of `/Applications/Headboard.app/Contents/MacOS/Headboard --diagnose` often helps with readings problems. It lists running app names; remove any you'd rather not share.
+        Optional. Output of `/Applications/Headroom.app/Contents/MacOS/Headroom --diagnose` often helps with readings problems. It lists running app names; remove any you'd rather not share.
     validations:
       required: false

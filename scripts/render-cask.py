@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Render packaging/homebrew/headboard.rb for the tap from VERSION and the DMG's SHA-256.
+"""Render packaging/homebrew/headroom.rb for the tap from VERSION and the DMG's SHA-256.
 
     render-cask.py [--dmg PATH | --sha256 HEX] [--output PATH]
 
@@ -31,7 +31,7 @@ def main():
     digest = args.sha256 or hashlib.sha256(args.dmg.read_bytes()).hexdigest()
     if not re.fullmatch(r'[0-9a-f]{64}', digest):
         parser.error('--sha256 must be 64 lowercase hex characters')
-    template = (appconfig.ROOT / 'packaging/homebrew/headboard.rb').read_text()
+    template = (appconfig.ROOT / 'packaging/homebrew/headroom.rb').read_text()
     body = re.sub(r'\A(?:#.*\n)+', '', template)  # drop the template's own header comment
     rendered = appconfig.render(body, {**config, 'CASK_TOKEN': token, 'DMG_SHA256': digest})
     output = args.output or out_dir / f'{token}.rb'

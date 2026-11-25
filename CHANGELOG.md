@@ -1,7 +1,7 @@
 # Changelog
 
-All notable changes to Headboard are listed here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Headboard uses
+All notable changes to Headroom are listed here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Headroom uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Versions before
 the first public release were private builds and were never published for
 download.
@@ -9,19 +9,18 @@ download.
 ## [Unreleased]
 
 ### Changed
-- Renamed from Headroom to Headboard, since several unrelated apps (including
-  the official `headroom` Homebrew cask) already use that name and install to
-  the same paths. On first launch, history and the quota cache move from
-  `~/Library/Application Support/Headroom` to
-  `~/Library/Application Support/Headboard`, but only when that folder was
-  written by this app. Preferences keep the `org.headroom.app` domain. Entries
-  below for earlier versions use the new name.
+- History, the quota cache and the observation log now live in
+  `~/Library/Application Support/org.headroom.app`. An unrelated app also
+  called Headroom (the `headroom` Homebrew cask) uses
+  `~/Library/Application Support/Headroom`, and uninstalling it with `--zap`
+  deletes that folder. On first launch Headroom moves its own files out of
+  it, but only when the log there was written by this app.
 
 ### Added
-- A short welcome on first launch explaining what Headboard measures, where
+- A short welcome on first launch explaining what Headroom measures, where
   it lives, and the optional features, plus a Settings window (⌘,) and an
   About panel.
-- Public updates: Headboard checks a public, signed update feed and no longer
+- Public updates: Headroom checks a public, signed update feed and no longer
   needs a GitHub login. Downloads come as a notarized DMG or ZIP.
 - Hover details across the panel: rest on any row, meter, or tile to see
   exactly what it measures.
@@ -30,7 +29,7 @@ download.
   Ante CLI at `~/.ante/bin/ante`; while any exist, they replace the Claude
   Code row.
 - Claude Code users whose sign-in lives in the login Keychain now see their
-  Claude limits. Headboard never shows a Keychain prompt, and **Use Claude
+  Claude limits. Headroom never shows a Keychain prompt, and **Use Claude
   Code's Keychain sign-in** in Settings → Limits turns Keychain use off.
 - Claude's model-specific weekly windows (for example Sonnet or Opus) appear
   alongside the 5-hour and weekly windows when Anthropic reports them.
@@ -44,7 +43,7 @@ download.
   label their axis in the unit that fits the largest value.
 - Disks of 1 TB or more show sizes in TB (for example "1.26 TB free of
   2.00 TB") in the panel, menu bar, Trends, and log.md.
-- Limits is opt-in on new installs. While it's off, Headboard reads no
+- Limits is opt-in on new installs. While it's off, Headroom reads no
   sign-ins, runs no provider CLI, and makes no usage requests. Existing
   installs keep their current setting.
 - New app icon: a white gauge on a black tile with its needle near the low
@@ -53,7 +52,7 @@ download.
   labeled "% used", and a reading that couldn't be refreshed is dimmed and
   labeled with when it was fetched.
 - Agents is off by default. Turn it on from the panel's widget menu. While
-  it's off, Headboard does no agent scanning.
+  it's off, Headroom does no agent scanning.
 - The Agents card is built around what's running now: project, agent, and
   the live memory of each agent's processes, then today's tokens and
   estimated spend.
@@ -141,7 +140,7 @@ download.
 - Disk tracking: free, purgeable, and total space, a 24-hour chart, fill rate,
   and an estimate of days until full.
 - On-demand, throttled scan of the largest disk consumers, with Reveal in
-  Finder and Copy Path. Headboard never deletes anything.
+  Finder and Copy Path. Headroom never deletes anything.
 - History stops writing when less than about 512 MB is free.
 
 ### Fixed

@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Sign Headboard with a stable self-signed identity ("Headboard Local").
+# Sign Headroom with a stable self-signed identity ("Headroom Local").
 # Ad-hoc signatures change every build, so Keychain can never match a
 # rebuilt binary to a previous "Always Allow" consent — every rebuild and
 # every keychain read re-prompts. A persistent certificate makes consent
@@ -8,21 +8,21 @@
 set -eu
 
 #
-# HEADBOARD_SIGN_IDENTITY selects another path:
+# HEADROOM_SIGN_IDENTITY selects another path:
 #   -                                   ad-hoc, for CI builds and release dry runs
 #   Developer ID Application: … (TEAM)  hardened runtime + secure timestamps
-# HEADBOARD_SIGN_KEYCHAIN optionally names the keychain holding that identity
+# HEADROOM_SIGN_KEYCHAIN optionally names the keychain holding that identity
 # (CI imports the certificate into a throwaway keychain).
 # Sparkle's nested code is signed inside-out, then the host app; it must use
 # the same team as the app for library validation.
-if [[ -n "${HEADBOARD_SIGN_IDENTITY:-}" ]]; then
+if [[ -n "${HEADROOM_SIGN_IDENTITY:-}" ]]; then
     APP="$1"
     FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
-    if [[ "$HEADBOARD_SIGN_IDENTITY" == "-" ]]; then
+    if [[ "$HEADROOM_SIGN_IDENTITY" == "-" ]]; then
         flags=(--sign -)  # no hardened runtime: ad-hoc code has no team for library validation
     else
-        flags=(--options runtime --timestamp --sign "$HEADBOARD_SIGN_IDENTITY")
-        [[ -n "${HEADBOARD_SIGN_KEYCHAIN:-}" ]] && flags+=(--keychain "$HEADBOARD_SIGN_KEYCHAIN")
+        flags=(--options runtime --timestamp --sign "$HEADROOM_SIGN_IDENTITY")
+        [[ -n "${HEADROOM_SIGN_KEYCHAIN:-}" ]] && flags+=(--keychain "$HEADROOM_SIGN_KEYCHAIN")
     fi
     for NESTED in "$FRAMEWORK/Versions/B/XPCServices/Downloader.xpc" \
                   "$FRAMEWORK/Versions/B/XPCServices/Installer.xpc" \
@@ -35,9 +35,9 @@ if [[ -n "${HEADBOARD_SIGN_IDENTITY:-}" ]]; then
     exit 0
 fi
 
-IDENTITY="Headboard Local"
-SIGNING_DIR="$HOME/Library/Application Support/Headboard/signing"
-KC="$SIGNING_DIR/headboard-signing.keychain-db"
+IDENTITY="Headroom Local"
+SIGNING_DIR="$HOME/Library/Application Support/Headroom/signing"
+KC="$SIGNING_DIR/headroom-signing.keychain-db"
 PW_FILE="$SIGNING_DIR/password"
 APP="$1"
 
@@ -63,7 +63,7 @@ distinguished_name = dn
 x509_extensions = v3
 prompt = no
 [dn]
-CN = Headboard Local
+CN = Headroom Local
 [v3]
 basicConstraints = critical, CA:FALSE
 keyUsage = critical, digitalSignature

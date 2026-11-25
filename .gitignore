@@ -1,5 +1,5 @@
 .build/
-.build-headboard*/
+.build-headroom*/
 .swiftpm/
 dist/
 .DS_Store
