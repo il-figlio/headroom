@@ -24,7 +24,7 @@ import Testing
         for name in ["history.sqlite", "history.sqlite-wal"] where FileManager.default.fileExists(atPath: dir.appendingPathComponent(name).path) {
             try FileManager.default.copyItem(at: dir.appendingPathComponent(name), to: copy.appendingPathComponent(name))
         }
-        return try fingerprint(HistoryStore(directory: copy).summary(now: now))
+        return try fingerprint(HistoryStore(directory: copy, now: now).summary(now: now))
     }
     func logStamp(_ store: HistoryStore) -> String? {
         guard let text = try? String(contentsOf: store.logURL, encoding: .utf8) else { return nil }
@@ -57,7 +57,7 @@ import Testing
     /// intermittent apps, low disk, invalid readings, and another writer.
     @Test func cachedSummaryMatchesFreshStore() throws {
         let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try HistoryStore(directory: dir)
+        let store = try HistoryStore(directory: dir, now: base)
         var t = base
         var compared = 0
         var titles = Set<String>()
@@ -104,14 +104,14 @@ import Testing
             }
             if minute == 1000 {
                 // A second connection (CLI capture, another instance) writes between samples.
-                try HistoryStore(directory: dir).record(memory: memory(.warning), apps: apps, disk: diskReading, at: t.addingTimeInterval(30))
+                try HistoryStore(directory: dir, now: t).record(memory: memory(.warning), apps: apps, disk: diskReading, at: t.addingTimeInterval(30))
             }
             if minute == 1100 {
                 try store.saveConsumers([DiskConsumer(path: "/a", name: "A", bytes: 5_000_000_000, previousBytes: nil, scannedAt: nil, partial: false)],
                                         localSnapshots: 1, at: t)
             }
             if minute == 1200 {
-                try HistoryStore(directory: dir).saveConsumers([DiskConsumer(path: "/a", name: "A", bytes: 7_000_000_000, previousBytes: nil, scannedAt: nil, partial: true)],
+                try HistoryStore(directory: dir, now: t).saveConsumers([DiskConsumer(path: "/a", name: "A", bytes: 7_000_000_000, previousBytes: nil, scannedAt: nil, partial: true)],
                                                                localSnapshots: 2, at: t)
             }
             if [1000, 1100, 1200].contains(minute) {
@@ -138,7 +138,7 @@ import Testing
 
     @Test func lowDiskWritesNothing() throws {
         let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try HistoryStore(directory: dir)
+        let store = try HistoryStore(directory: dir, now: base)
         let summary = try store.record(memory: memory(.warning), apps: [], disk: disk(free: 100_000_000), at: base)
         #expect(summary.sampleCount == 0)
         #expect(!FileManager.default.fileExists(atPath: store.logURL.path))
@@ -147,7 +147,7 @@ import Testing
 
     @Test func reportCadence() throws {
         let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try HistoryStore(directory: dir)
+        let store = try HistoryStore(directory: dir, now: base)
         // A new store's first record writes the report (what `--capture` relies on).
         try store.record(memory: memory(), apps: [], at: base)
         #expect(logStamp(store) == stamp(base))
@@ -177,14 +177,14 @@ import Testing
         try store.record(memory: memory(), apps: [], at: next)
         #expect(logStamp(store) == stamp(next))
         // A reopened store writes on its first record.
-        let reopened = try HistoryStore(directory: dir)
+        let reopened = try HistoryStore(directory: dir, now: next)
         try reopened.record(memory: memory(), apps: [], at: next.addingTimeInterval(60))
         #expect(logStamp(reopened) == stamp(next.addingTimeInterval(60)))
     }
 
     @Test func retentionStillPrunes() throws {
         let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try HistoryStore(directory: dir)
+        let store = try HistoryStore(directory: dir, now: base)
         try store.record(memory: memory(), apps: [], at: base)
         try store.record(memory: memory(), apps: [], at: base.addingTimeInterval(60))
         #expect(try store.summary(now: base.addingTimeInterval(60)).sampleCount == 2)
@@ -198,7 +198,7 @@ import Testing
 
     @Test func archiveResetsCaches() throws {
         let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try HistoryStore(directory: dir)
+        let store = try HistoryStore(directory: dir, now: base)
         let app = ObservedApp(key: "com.example.browser", name: "Browser", session: "1", bytes: 1_000_000_000)
         for i in 0..<5 { try store.record(memory: memory(), apps: [app], disk: disk(free: 9_000_000_000), at: base.addingTimeInterval(Double(i) * 60)) }
         try store.saveConsumers([DiskConsumer(path: "/a", name: "A", bytes: 1, previousBytes: nil, scannedAt: nil, partial: false)], localSnapshots: 0, at: base)

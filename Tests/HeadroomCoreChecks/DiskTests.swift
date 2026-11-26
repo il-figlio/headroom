@@ -30,7 +30,7 @@ import CSQLite
     }
     @Test func recordStoresDiskAndLowSpaceSkipsWrites() throws {
         let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try HistoryStore(directory: dir)
+        let store = try HistoryStore(directory: dir, now: base)
         _ = try store.record(memory: memory(), apps: [], disk: disk(free: 10 << 30), at: base)
         var summary = try store.summary(now: base)
         #expect(summary.latestDiskFree == 10 << 30)
@@ -48,14 +48,14 @@ import CSQLite
         sqlite3_exec(db, "CREATE TABLE samples (ts REAL PRIMARY KEY, used REAL, total REAL, compressed REAL, swap REAL, pressure INTEGER, apps TEXT)", nil, nil, nil)
         sqlite3_exec(db, "INSERT INTO samples VALUES (1800000000, 1, 16, 2, 0, 1, '[]')", nil, nil, nil)
         sqlite3_close(db)
-        let store = try HistoryStore(directory: dir)
+        let store = try HistoryStore(directory: dir, now: base)
         let summary = try store.record(memory: memory(), apps: [], disk: disk(free: 9 << 30), at: base.addingTimeInterval(60))
         #expect(summary.sampleCount == 2)
         #expect(summary.latestDiskFree == 9 << 30)
     }
     @Test func diskRateAndDaysUntilFull() throws {
         let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try HistoryStore(directory: dir)
+        let store = try HistoryStore(directory: dir, now: base)
         // Free space drops 2 GB/hour across three hours: 48 GB/day, ~0.2 days left at 10 GB.
         for i in 0...3 {
             _ = try store.record(memory: memory(), apps: [], disk: disk(free: UInt64(16 << 30) - UInt64(i) * (2 << 30)), at: base.addingTimeInterval(Double(i) * 3600))
@@ -66,7 +66,7 @@ import CSQLite
     }
     @Test func consumerRoundTripKeepsPreviousScan() throws {
         let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try HistoryStore(directory: dir)
+        let store = try HistoryStore(directory: dir, now: base)
         try store.saveConsumers([.init(path: "/a", name: "~/a", bytes: 5 << 30, previousBytes: nil, scannedAt: nil, partial: false)],
                                 localSnapshots: 0, at: base)
         var scan = try store.loadConsumers()
@@ -85,7 +85,7 @@ import CSQLite
     }
     @Test func diskAdviceFiresOnLowSpaceAndConsumerGrowth() throws {
         let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try HistoryStore(directory: dir)
+        let store = try HistoryStore(directory: dir, now: base)
         _ = try store.record(memory: memory(), apps: [], disk: disk(free: 8 << 30), at: base)
         try store.saveConsumers([.init(path: "/x", name: "~/x", bytes: 10 << 30, previousBytes: nil, scannedAt: nil, partial: false)],
                                 localSnapshots: 0, at: base)

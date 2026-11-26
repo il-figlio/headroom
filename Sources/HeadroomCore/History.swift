@@ -163,13 +163,17 @@ public final class HistoryStore {
     private var consumerCache: ConsumerScan?
     private var dataVersion: Int64?
 
-    public init(directory: URL = HistoryStore.defaultDirectory) throws {
+    /// Samples, events and hourly agent usage older than this are deleted.
+    public static let retention: TimeInterval = 30 * 86400
+
+    /// `now` is the clock retention is measured against when the store opens.
+    public init(directory: URL = HistoryStore.defaultDirectory, now: Date = Date()) throws {
         self.directory = directory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try open()
+        try open(now: now)
     }
     deinit { sqlite3_close(db) }
-    private func open() throws {
+    private func open(now: Date) throws {
         guard sqlite3_open_v2(directory.appendingPathComponent("history.sqlite").path, &db,
                              SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             throw HistoryError(detail: "Couldn't open Headroom history.")
@@ -190,6 +194,19 @@ public final class HistoryStore {
         try execute("CREATE TABLE IF NOT EXISTS agent_usage (hour REAL, kind TEXT, tokens INTEGER, cost_usd REAL, PRIMARY KEY(hour, kind))")
         try migrateAgentSessions()
         try execute("PRAGMA user_version=2")
+        pruneExpired(now: now)
+    }
+    /// Retention on open: record() and agent scans prune as they write, which
+    /// never happens while recording is paused or Agents is off. Runs before
+    /// anything is cached. Best effort, because a busy or full disk shouldn't
+    /// keep history from opening; the next open or write tries again.
+    private func pruneExpired(now: Date) {
+        let cutoff = SQLValue.number(now.addingTimeInterval(-Self.retention).timeIntervalSince1970)
+        try? agentTransaction {
+            try execute("DELETE FROM samples WHERE ts < ?", [cutoff])
+            try execute("DELETE FROM events WHERE ts < ?", [cutoff])
+            try execute("DELETE FROM agent_usage WHERE hour < ?", [cutoff])
+        }
     }
     /// Databases written before storage tracking lack the disk columns.
     private func migrate() throws {
@@ -254,7 +271,7 @@ public final class HistoryStore {
                         [.number(date.timeIntervalSince1970), .text("pressure-change"), .text("System"),
                          .text("\(oldPressure.title) → \(memory.pressure.title)")])
         }
-        let cutoff = date.addingTimeInterval(-30 * 86400).timeIntervalSince1970
+        let cutoff = date.addingTimeInterval(-Self.retention).timeIntervalSince1970
         try execute("DELETE FROM samples WHERE ts < ?", [.number(cutoff)])
         sampleCache?.rows.removeAll { $0.ts < cutoff }
         try execute("DELETE FROM events WHERE ts < ?", [.number(cutoff)])
@@ -703,8 +720,8 @@ public final class HistoryStore {
                     try FileManager.default.moveItem(at: source, to: archive.appendingPathComponent(name))
                 }
             }
-        } catch { try open(); throw error }
-        try open()
+        } catch { try open(now: date); throw error }
+        try open(now: date)
         try writeLog(summary: TrendSummary(), now: date)
         return archive
     }
