@@ -1,17 +1,19 @@
-import XCTest
+import Foundation
 import Security
+import Testing
 @testable import HeadroomCore
 
-final class QuotaTests: XCTestCase {
-    private var home: URL!
+/// Credential parsing, response mapping and source gating, in a throwaway
+/// home with fake tokens. The Claude source gets no Keychain and an HTTP
+/// closure that fails the check if it is ever called.
+@Suite struct QuotaTests {
+    private let home: URL
 
-    override func setUp() {
+    init() {
         home = FileManager.default.temporaryDirectory.appendingPathComponent("quota-\(UUID().uuidString)")
     }
 
-    override func tearDown() {
-        try? FileManager.default.removeItem(at: home)
-    }
+    private func cleanUp() { try? FileManager.default.removeItem(at: home) }
 
     private func write(_ relative: String, _ contents: String) {
         let url = home.appendingPathComponent(relative)
@@ -19,31 +21,42 @@ final class QuotaTests: XCTestCase {
         try? contents.write(to: url, atomically: true, encoding: .utf8)
     }
 
+    /// A Claude source that can reach neither the Keychain nor the network.
+    private func offlineClaude() -> ClaudeQuotaSource {
+        ClaudeQuotaSource(keychain: UnusedKeychain(), keychainAllowed: { false }, http: { url, _ in
+            Issue.record("unexpected request to \(url)")
+            throw URLError(.notConnectedToInternet)
+        })
+    }
+
     // MARK: - Credential reading
 
-    func testCodexCredentialsFromOAuthTokens() throws {
+    @Test func codexCredentialsFromOAuthTokens() throws {
+        defer { cleanUp() }
         write(".codex/auth.json", """
         {"OPENAI_API_KEY": null, "auth_mode": "chatgpt", "last_refresh": "2026-10-14T00:00:00Z",
          "tokens": {"access_token": "at-abc", "refresh_token": "rt", "id_token": "it",
                     "account_id": "acct-123"}}
         """)
         let creds = try CodexQuotaSource.readCredentials(home: home)
-        XCTAssertEqual(creds.accessToken, "at-abc")
-        XCTAssertEqual(creds.accountID, "acct-123")
-        XCTAssertFalse(creds.apiKeyOnly)
+        #expect(creds.accessToken == "at-abc")
+        #expect(creds.accountID == "acct-123")
+        #expect(!creds.apiKeyOnly)
     }
 
-    func testCodexCredentialsAPIKeyOnly() throws {
+    @Test func codexCredentialsAPIKeyOnly() throws {
+        defer { cleanUp() }
         write(".codex/auth.json", #"{"OPENAI_API_KEY": "sk-abc"}"#)
         let creds = try CodexQuotaSource.readCredentials(home: home)
-        XCTAssertTrue(creds.apiKeyOnly)
+        #expect(creds.apiKeyOnly)
     }
 
-    func testCodexCredentialsMissing() {
-        XCTAssertThrowsError(try CodexQuotaSource.readCredentials(home: home))
+    @Test func codexCredentialsMissing() {
+        #expect(throws: (any Error).self) { try CodexQuotaSource.readCredentials(home: home) }
     }
 
-    func testCodexAccountIDFromJWT() throws {
+    @Test func codexAccountIDFromJWT() throws {
+        defer { cleanUp() }
         // Payload: {"https://api.openai.com/auth": {"chatgpt_account_id": "acct-jwt"}}
         let payload = Data(#"{"https://api.openai.com/auth":{"chatgpt_account_id":"acct-jwt"}}"#.utf8)
         let b64 = payload.base64EncodedString()
@@ -54,80 +67,87 @@ final class QuotaTests: XCTestCase {
         {"tokens": {"access_token": "at", "id_token": "\(jwt)"}}
         """)
         let creds = try CodexQuotaSource.readCredentials(home: home)
-        XCTAssertEqual(creds.accountID, "acct-jwt")
+        #expect(creds.accountID == "acct-jwt")
     }
 
-    func testClaudeCredentials() throws {
+    @Test func claudeCredentials() throws {
+        defer { cleanUp() }
         write(".claude/.credentials.json", """
         {"claudeAiOauth": {"accessToken": "sk-ant-oat-x", "refreshToken": "rt",
          "expiresAt": 1893456000000, "scopes": ["user:profile", "user:inference"],
          "subscriptionType": "max", "rateLimitTier": "default_claude_max_5x"}}
         """)
         let creds = try ClaudeQuotaSource.readCredentials(home: home)
-        XCTAssertEqual(creds.accessToken, "sk-ant-oat-x")
-        XCTAssertEqual(creds.subscriptionType, "max")
-        XCTAssertEqual(creds.scopes, ["user:profile", "user:inference"])
-        XCTAssertNotNil(creds.expiresAt)
+        #expect(creds.accessToken == "sk-ant-oat-x")
+        #expect(creds.subscriptionType == "max")
+        #expect(creds.scopes == ["user:profile", "user:inference"])
+        #expect(creds.expiresAt != nil)
     }
 
-    func testClaudeCredentialsMissing() {
+    @Test func claudeCredentialsMissing() {
         // No Keychain passed: the real login Keychain is never consulted.
-        XCTAssertThrowsError(try ClaudeQuotaSource.readCredentials(home: home))
+        #expect(throws: (any Error).self) { try ClaudeQuotaSource.readCredentials(home: home) }
     }
 
-    func testAnteOAuthFileNeedsNoKeychain() throws {
+    @Test func anteOAuthFileNeedsNoKeychain() throws {
+        defer { cleanUp() }
         write(".ante/auth/credentials/oauth/anthropic.json", #"{"access_token":"ante-token","refresh_token":"owned-by-ante","expires_at":"2099-01-01T00:00:00Z","scopes":["user:profile"]}"#)
         let creds = try ClaudeQuotaSource.readCredentials(home: home)
-        XCTAssertEqual(creds.accessToken, "ante-token")
-        XCTAssertNotNil(creds.expiresAt)
-        XCTAssertEqual(QuotaSources.credentialed(home: home).map(\.provider), [.claude])
+        #expect(creds.accessToken == "ante-token")
+        #expect(creds.expiresAt != nil)
+        #expect(QuotaSources.credentialed(home: home).map(\.provider) == [.claude])
     }
 
-    func testValidAnteCredentialsReplaceExpiredClaudeFile() throws {
+    @Test func validAnteCredentialsReplaceExpiredClaudeFile() throws {
+        defer { cleanUp() }
         write(".claude/.credentials.json", #"{"claudeAiOauth":{"accessToken":"old","expiresAt":1}}"#)
         write(".ante/auth/credentials/oauth/anthropic.json", #"{"access_token":"fresh","expires_at":"2099-01-01T00:00:00.123456Z"}"#)
         let creds = try ClaudeQuotaSource.readCredentials(home: home)
-        XCTAssertEqual(creds.accessToken, "fresh")
-        XCTAssertNotNil(creds.expiresAt)
+        #expect(creds.accessToken == "fresh")
+        #expect(creds.expiresAt != nil)
     }
 
-    func testAnteCredentialsWithInvalidExpiryAreRejected() {
+    @Test func anteCredentialsWithInvalidExpiryAreRejected() {
+        defer { cleanUp() }
         write(".ante/auth/credentials/oauth/anthropic.json", #"{"access_token":"token","expires_at":"not-a-date"}"#)
-        XCTAssertThrowsError(try ClaudeQuotaSource.readCredentials(home: home))
+        #expect(throws: (any Error).self) { try ClaudeQuotaSource.readCredentials(home: home) }
     }
 
-    func testExpiredAnteCredentialsRemainUnchanged() async throws {
+    @Test func expiredAnteCredentialsRemainUnchanged() async throws {
+        defer { cleanUp() }
         let record = #"{"access_token":"expired","refresh_token":"owned-by-ante","expires_at":"2000-01-01T00:00:00Z"}"#
         write(".ante/auth/credentials/oauth/anthropic.json", record)
-        let reading = await ClaudeQuotaSource().fetch(home: home)
-        XCTAssertTrue(reading.error?.contains("sign-in expired") == true)
-        XCTAssertEqual(try String(contentsOf: home.appendingPathComponent(".ante/auth/credentials/oauth/anthropic.json")), record)
+        let reading = await offlineClaude().fetch(home: home)
+        #expect(reading.error?.contains("sign-in expired") == true)
+        let stored = try String(contentsOf: home.appendingPathComponent(".ante/auth/credentials/oauth/anthropic.json"), encoding: .utf8)
+        #expect(stored == record)
     }
 
-    func testClaudeKeychainConsentIsNotInteractive() {
+    @Test func claudeKeychainConsentIsNotInteractive() {
         let attempts = Counter()
         let keychain = SystemClaudeKeychain { query, _ in
             attempts.increment()
             let attributes = query as NSDictionary
-            XCTAssertEqual(attributes[kSecUseAuthenticationUI] as? String, kSecUseAuthenticationUIFail as String)
+            #expect(attributes[kSecUseAuthenticationUI] as? String == kSecUseAuthenticationUIFail as String)
             return errSecInteractionNotAllowed
         }
-        XCTAssertEqual(keychain.readSecret(), .needsPrompt)
-        XCTAssertEqual(attempts.value, 1)
+        #expect(keychain.readSecret() == .needsPrompt)
+        #expect(attempts.value == 1)
     }
 
-    func testClaudeExpiredCredentialsRemainUnchanged() async throws {
+    @Test func claudeExpiredCredentialsRemainUnchanged() async throws {
+        defer { cleanUp() }
         let record = #"{"claudeAiOauth":{"accessToken":"expired","refreshToken":"must-not-rotate","expiresAt":1}}"#
         write(".claude/.credentials.json", record)
-        let reading = await ClaudeQuotaSource().fetch(home: home)
-        XCTAssertTrue(reading.error?.contains("sign-in expired") == true)
-        let stored = try String(contentsOf: home.appendingPathComponent(".claude/.credentials.json"))
-        XCTAssertEqual(stored, record)
+        let reading = await offlineClaude().fetch(home: home)
+        #expect(reading.error?.contains("sign-in expired") == true)
+        let stored = try String(contentsOf: home.appendingPathComponent(".claude/.credentials.json"), encoding: .utf8)
+        #expect(stored == record)
     }
 
     // MARK: - Response mapping
 
-    func testCodexUsageMapping() throws {
+    @Test func codexUsageMapping() throws {
         let json = """
         {"account_id": "acct-1", "plan_type": "pro",
          "rate_limit": {
@@ -141,28 +161,28 @@ final class QuotaTests: XCTestCase {
         """
         let response = try JSONDecoder().decode(CodexQuotaSource.Response.self, from: Data(json.utf8))
         let reading = CodexQuotaSource.map(response)
-        XCTAssertEqual(reading.provider, .codex)
-        XCTAssertEqual(reading.plan, "Pro")
-        XCTAssertEqual(reading.windows.count, 3)
-        XCTAssertEqual(reading.windows[0].label, "5h")
-        XCTAssertEqual(reading.windows[0].usedFraction, 0.42, accuracy: 0.001)
-        XCTAssertEqual(reading.windows[1].label, "Week")
-        XCTAssertEqual(reading.windows[2].label, "GPT-5-Spark · 5h")
-        XCTAssertEqual(reading.balance, "150 credits")
-        XCTAssertNotNil(reading.windows[0].resetsAt)
+        #expect(reading.provider == .codex)
+        #expect(reading.plan == "Pro")
+        try #require(reading.windows.count == 3)
+        #expect(reading.windows[0].label == "5h")
+        #expect(abs(reading.windows[0].usedFraction - 0.42) < 0.001)
+        #expect(reading.windows[1].label == "Week")
+        #expect(reading.windows[2].label == "GPT-5-Spark · 5h")
+        #expect(reading.balance == "150 credits")
+        #expect(reading.windows[0].resetsAt == Date(timeIntervalSince1970: 1_760_400_000))
     }
 
-    func testCodexUnlimitedCredits() throws {
+    @Test func codexUnlimitedCredits() throws {
         let json = """
         {"plan_type": "team", "credits": {"has_credits": true, "unlimited": true}}
         """
         let response = try JSONDecoder().decode(CodexQuotaSource.Response.self, from: Data(json.utf8))
         let reading = CodexQuotaSource.map(response)
-        XCTAssertEqual(reading.balance, "unlimited credits")
-        XCTAssertTrue(reading.windows.isEmpty)
+        #expect(reading.balance == "unlimited credits")
+        #expect(reading.windows.isEmpty)
     }
 
-    func testClaudeUsageMapping() throws {
+    @Test func claudeUsageMapping() throws {
         let json = """
         {"five_hour": {"utilization": 55.4, "resets_at": "2026-10-14T20:30:00+00:00"},
          "seven_day": {"utilization": 12.0, "resets_at": "2026-10-20T00:00:00+00:00"},
@@ -173,36 +193,38 @@ final class QuotaTests: XCTestCase {
         let response = try JSONDecoder().decode(ClaudeQuotaSource.Response.self, from: Data(json.utf8))
         let creds = ClaudeQuotaSource.Credentials(accessToken: "x", scopes: [], subscriptionType: "max", expiresAt: nil)
         let reading = ClaudeQuotaSource.map(response, credentials: creds)
-        XCTAssertEqual(reading.provider, .claude)
-        XCTAssertEqual(reading.plan, "Max")
-        XCTAssertEqual(reading.windows.count, 3)
-        XCTAssertEqual(reading.windows[0].label, "5h")
-        XCTAssertEqual(reading.windows[0].usedFraction, 0.554, accuracy: 0.001)
-        XCTAssertNotNil(reading.windows[0].resetsAt)
-        XCTAssertEqual(reading.windows[2].label, "Opus")
-        XCTAssertEqual(reading.balance, "$434.43 of $600 extra usage")
+        #expect(reading.provider == .claude)
+        #expect(reading.plan == "Max")
+        try #require(reading.windows.count == 3)
+        #expect(reading.windows[0].label == "5h")
+        #expect(abs(reading.windows[0].usedFraction - 0.554) < 0.001)
+        #expect(reading.windows[0].resetsAt != nil)
+        #expect(reading.windows[2].label == "Opus")
+        #expect(reading.balance == "$434.43 of $600 extra usage")
     }
 
-    func testClaudeUsageMinimal() throws {
+    @Test func claudeUsageMinimal() throws {
         let json = #"{"five_hour": {"utilization": 0, "resets_at": "2026-10-14T20:00:00Z"}}"#
         let response = try JSONDecoder().decode(ClaudeQuotaSource.Response.self, from: Data(json.utf8))
         let reading = ClaudeQuotaSource.map(response, credentials: .init(accessToken: "x", scopes: [], subscriptionType: nil, expiresAt: nil))
-        XCTAssertEqual(reading.windows.count, 1)
-        XCTAssertNil(reading.plan)
-        XCTAssertNil(reading.balance)
+        #expect(reading.windows.count == 1)
+        #expect(reading.plan == nil)
+        #expect(reading.balance == nil)
     }
 
     // MARK: - Source gating
 
-    func testCredentialedSourcesFollowDisk() {
-        XCTAssertTrue(QuotaSources.credentialed(home: home).isEmpty)
+    @Test func credentialedSourcesFollowDisk() {
+        defer { cleanUp() }
+        #expect(QuotaSources.credentialed(home: home).isEmpty)
         write(".codex/auth.json", #"{"tokens":{"access_token":"at","refresh_token":"rt"}}"#)
-        XCTAssertEqual(QuotaSources.credentialed(home: home).count, 1)
+        #expect(QuotaSources.credentialed(home: home).count == 1)
         write(".claude/.credentials.json", #"{"claudeAiOauth":{"accessToken":"at"}}"#)
-        XCTAssertEqual(QuotaSources.credentialed(home: home).count, 2)
+        #expect(QuotaSources.credentialed(home: home).count == 2)
     }
 
-    func testNamedAnteClaudeAccountsUseTheCLIButKeepCodex() async throws {
+    @Test func namedAnteClaudeAccountsUseTheCLIButKeepCodex() async throws {
+        defer { cleanUp() }
         write(".codex/auth.json", "{}")
         write(".claude/.credentials.json", "{}")
         write(".ante/auth/credentials/oauth/anthropic/personal.json", "{}")
@@ -215,14 +237,27 @@ final class QuotaTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o700],
                                               ofItemAtPath: home.appendingPathComponent(".ante/bin/ante").path)
         let sources = QuotaSources.credentialed(home: home)
-        XCTAssertEqual(sources.map(\.provider), [.codex, .claude, .claude])
+        #expect(sources.map(\.provider) == [.codex, .claude, .claude])
 
+        // Only the two Ante sources are fetched: they run the stub script above.
         let readings = await QuotaFetcher.fetchAll(sources: Array(sources.dropFirst()), home: home)
-        XCTAssertEqual(readings.map(\.id), ["claude/personal", "claude/work"])
-        XCTAssertEqual(readings.map { $0.windows.map(\.label) }, [["5h", "Fable"], ["5h", "Fable"]])
-        XCTAssertEqual(readings.first?.windows.first?.usedFraction, 0.25)
-        XCTAssertNotNil(readings.first?.windows.first?.resetsAt)
-        XCTAssertTrue(readings.allSatisfy { $0.plan == "Max" && $0.error == nil })
+        #expect(readings.map(\.id) == ["claude/personal", "claude/work"])
+        #expect(readings.map { $0.windows.map(\.label) } == [["5h", "Fable"], ["5h", "Fable"]])
+        #expect(readings.first?.windows.first?.usedFraction == 0.25)
+        #expect(readings.first?.windows.first?.resetsAt != nil)
+        #expect(readings.allSatisfy { $0.plan == "Max" && $0.error == nil })
+    }
+}
+
+/// Stands in where a Keychain is required but must never be consulted.
+private struct UnusedKeychain: ClaudeKeychain {
+    func itemInfo() -> KeychainItemInfo? {
+        Issue.record("Keychain attributes were read")
+        return nil
+    }
+    func readSecret() -> KeychainSecret {
+        Issue.record("Keychain secret was read")
+        return .missing
     }
 }
 
