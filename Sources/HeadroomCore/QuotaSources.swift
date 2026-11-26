@@ -124,6 +124,28 @@ public final class QuotaSourceState: @unchecked Sendable {
     }
 }
 
+/// A list element that decodes to nil instead of throwing, so one odd entry
+/// is skipped rather than failing the whole list.
+struct Lenient<T: Decodable>: Decodable {
+    let value: T?
+    init(from decoder: Decoder) throws { value = try? T(from: decoder) }
+}
+
+extension KeyedDecodingContainer {
+    /// The value under `key` whatever its JSON type; nil when absent.
+    func loose(_ key: Key) -> JSONValue? { try? decodeIfPresent(JSONValue.self, forKey: key) }
+    /// A finite number, or a string holding one.
+    func looseNumber(_ key: Key) -> Double? { loose(key)?.number }
+    func looseInt(_ key: Key) -> Int? { looseNumber(key).flatMap { Int(exactly: $0.rounded()) } }
+    /// Epoch seconds (number or numeric string) or an ISO-8601 string.
+    func looseDate(_ key: Key) -> Date? {
+        guard let value = loose(key) else { return nil }
+        return value.number.map { Date(timeIntervalSince1970: $0) } ?? QuotaDate.parse(value.string)
+    }
+    /// A nested value that is dropped, not thrown, when it doesn't decode.
+    func lenient<T: Decodable>(_ type: T.Type, _ key: Key) -> T? { try? decodeIfPresent(type, forKey: key) }
+}
+
 // MARK: - Codex (OpenAI subscription quota via the ChatGPT backend)
 
 /// Reads `~/.codex/auth.json` (written by the Codex CLI login) and calls
@@ -135,8 +157,12 @@ public final class CodexQuotaSource: QuotaSource, @unchecked Sendable {
     public let provider: AgentKind = .codex
     public let credentialPaths = [".codex/auth.json"]
     let state = QuotaSourceState()
+    private let http: QuotaHTTP.Get
+    static let unexpectedMessage = "Codex usage API returned an unexpected response"
 
-    public init() {}
+    public convenience init() { self.init(http: { try await QuotaHTTP.get($0, headers: $1) }) }
+
+    init(http: @escaping QuotaHTTP.Get) { self.http = http }
 
     struct Credentials: Sendable {
         var accessToken: String
@@ -178,14 +204,17 @@ public final class CodexQuotaSource: QuotaSource, @unchecked Sendable {
         return nil
     }
 
-    // The wire shape, decoded leniently — unknown/extra fields are ignored
-    // and a malformed window degrades to nil instead of failing the fetch.
+    /// The wire shape, decoded leniently like the Claude and Ante responses:
+    /// unknown fields are ignored, a missing, null or oddly typed field drops
+    /// only that field (a window without a usable percentage drops only
+    /// that window), and list elements decode independently. Only a body
+    /// that isn't a JSON object fails to decode.
     struct Response: Decodable {
         var planType: String?
         var accountId: String?
         var rateLimit: RateLimit?
         var credits: Credits?
-        var additionalRateLimits: [Additional]?
+        var additionalRateLimits: [Additional]
         var resetCredits: ResetCredits?
 
         enum CodingKeys: String, CodingKey {
@@ -197,9 +226,22 @@ public final class CodexQuotaSource: QuotaSource, @unchecked Sendable {
             case resetCredits = "rate_limit_reset_credits"
         }
 
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            planType = c.loose(.planType)?.string
+            accountId = c.loose(.accountId)?.string
+            rateLimit = c.lenient(RateLimit.self, .rateLimit)
+            credits = c.lenient(Credits.self, .credits)
+            additionalRateLimits = (c.lenient([Lenient<Additional>].self, .additionalRateLimits) ?? []).compactMap(\.value)
+            resetCredits = c.lenient(ResetCredits.self, .resetCredits)
+        }
+
         struct ResetCredits: Decodable {
             var availableCount: Int?
             enum CodingKeys: String, CodingKey { case availableCount = "available_count" }
+            init(from decoder: Decoder) throws {
+                availableCount = try decoder.container(keyedBy: CodingKeys.self).looseInt(.availableCount)
+            }
         }
 
         struct RateLimit: Decodable {
@@ -209,21 +251,34 @@ public final class CodexQuotaSource: QuotaSource, @unchecked Sendable {
                 case primaryWindow = "primary_window"
                 case secondaryWindow = "secondary_window"
             }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                primaryWindow = c.lenient(Window.self, .primaryWindow)
+                secondaryWindow = c.lenient(Window.self, .secondaryWindow)
+            }
         }
 
         struct Window: Decodable {
-            var usedPercent: Double
-            var resetAt: Double?
+            /// A number or a numeric string; nil drops the window.
+            var usedPercent: Double?
+            /// Epoch seconds or an ISO-8601 string; nil keeps the window without a reset time.
+            var resetAt: Date?
             var limitWindowSeconds: Int?
             enum CodingKeys: String, CodingKey {
                 case usedPercent = "used_percent"
                 case resetAt = "reset_at"
                 case limitWindowSeconds = "limit_window_seconds"
             }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                usedPercent = c.looseNumber(.usedPercent)
+                resetAt = c.looseDate(.resetAt)
+                limitWindowSeconds = c.looseInt(.limitWindowSeconds)
+            }
             var quotaWindow: QuotaWindow? {
-                QuotaWindow(label: CodexQuotaSource.windowLabel(seconds: limitWindowSeconds),
-                            usedFraction: usedPercent / 100,
-                            resetsAt: resetAt.map { Date(timeIntervalSince1970: $0) })
+                guard let usedPercent else { return nil }
+                return QuotaWindow(label: CodexQuotaSource.windowLabel(seconds: limitWindowSeconds),
+                                   usedFraction: usedPercent / 100, resetsAt: resetAt)
             }
         }
 
@@ -236,10 +291,9 @@ public final class CodexQuotaSource: QuotaSource, @unchecked Sendable {
             }
             init(from decoder: Decoder) throws {
                 let c = try decoder.container(keyedBy: CodingKeys.self)
-                hasCredits = try? c.decodeIfPresent(Bool.self, forKey: .hasCredits)
-                unlimited = try? c.decodeIfPresent(Bool.self, forKey: .unlimited)
-                if let d = try? c.decodeIfPresent(Double.self, forKey: .balance) { balance = d }
-                else if let s = try? c.decodeIfPresent(String.self, forKey: .balance) { balance = Double(s) }
+                hasCredits = c.lenient(Bool.self, .hasCredits)
+                unlimited = c.lenient(Bool.self, .unlimited)
+                balance = c.looseNumber(.balance)
             }
         }
 
@@ -251,6 +305,12 @@ public final class CodexQuotaSource: QuotaSource, @unchecked Sendable {
                 case limitName = "limit_name"
                 case meteredFeature = "metered_feature"
                 case rateLimit = "rate_limit"
+            }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                limitName = c.loose(.limitName)?.string
+                meteredFeature = c.loose(.meteredFeature)?.string
+                rateLimit = c.lenient(RateLimit.self, .rateLimit)
             }
         }
     }
@@ -277,26 +337,34 @@ public final class CodexQuotaSource: QuotaSource, @unchecked Sendable {
             return state.fail("API-key sign-in doesn't expose plan limits", provider: provider)
         }
 
+        var headers = ["Authorization": "Bearer \(credentials.accessToken)"]
+        if let accountID = credentials.accountID { headers["ChatGPT-Account-Id"] = accountID }
+        let data: Data, response: HTTPURLResponse
         do {
-            var headers = ["Authorization": "Bearer \(credentials.accessToken)"]
-            if let accountID = credentials.accountID { headers["ChatGPT-Account-Id"] = accountID }
-            let (data, http) = try await QuotaHTTP.get(
-                URL(string: "https://chatgpt.com/backend-api/wham/usage")!, headers: headers)
-            switch http.statusCode {
-            case 200:
-                let decoded = try JSONDecoder().decode(Response.self, from: data)
-                return state.succeed(Self.map(decoded))
-            case 401, 403:
-                return state.fail("Codex session expired — run `codex login`", provider: provider,
-                                  retryAfter: Date().addingTimeInterval(3600))
-            case 429:
-                return state.fail("Codex usage API rate-limited", provider: provider,
-                                  retryAfter: Self.retryAfter(http) ?? Date().addingTimeInterval(900))
-            default:
-                return state.fail("Codex usage API returned HTTP \(http.statusCode)", provider: provider)
-            }
+            (data, response) = try await http(URL(string: "https://chatgpt.com/backend-api/wham/usage")!, headers)
         } catch {
             return state.fail("Network error: \(error.localizedDescription)", provider: provider)
+        }
+        switch response.statusCode {
+        case 200:
+            // Not a network failure: the body arrived but isn't a usage
+            // report (not a JSON object, or nothing in it could be read).
+            guard let decoded = try? JSONDecoder().decode(Response.self, from: data) else {
+                return state.fail(Self.unexpectedMessage, provider: provider)
+            }
+            let reading = Self.map(decoded)
+            guard reading.plan != nil || reading.hasUsage else {
+                return state.fail(Self.unexpectedMessage, provider: provider)
+            }
+            return state.succeed(reading)
+        case 401, 403:
+            return state.fail("Codex session expired — run `codex login`", provider: provider,
+                              retryAfter: Date().addingTimeInterval(3600))
+        case 429:
+            return state.fail("Codex usage API rate-limited", provider: provider,
+                              retryAfter: Self.retryAfter(response) ?? Date().addingTimeInterval(900))
+        default:
+            return state.fail("Codex usage API returned HTTP \(response.statusCode)", provider: provider)
         }
     }
 
@@ -313,8 +381,13 @@ public final class CodexQuotaSource: QuotaSource, @unchecked Sendable {
         }
         if let primary = response.rateLimit?.primaryWindow?.quotaWindow { reading.windows.append(primary) }
         if let secondary = response.rateLimit?.secondaryWindow?.quotaWindow { reading.windows.append(secondary) }
-        for extra in (response.additionalRateLimits ?? []).prefix(2) {
-            for window in [extra.rateLimit?.primaryWindow, extra.rateLimit?.secondaryWindow].compactMap({ $0?.quotaWindow }) {
+        // The first two extra limits that have a usable window.
+        var extras = 0
+        for extra in response.additionalRateLimits where extras < 2 {
+            let windows = [extra.rateLimit?.primaryWindow, extra.rateLimit?.secondaryWindow].compactMap { $0?.quotaWindow }
+            guard !windows.isEmpty else { continue }
+            extras += 1
+            for window in windows {
                 var labeled = window
                 labeled.label = "\(extra.limitName ?? extra.meteredFeature ?? "Model") · \(window.label)"
                 reading.windows.append(labeled)

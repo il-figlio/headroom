@@ -128,11 +128,6 @@ struct AnteClaudeQuotaSource: QuotaSource {
                 resetsAt = try? c.decodeIfPresent(String.self, forKey: .resetsAt)
             }
         }
-
-        struct Lenient<T: Decodable>: Decodable {
-            let value: T?
-            init(from decoder: Decoder) throws { value = try? T(from: decoder) }
-        }
     }
 }
 
