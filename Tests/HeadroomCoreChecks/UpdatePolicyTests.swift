@@ -1,16 +1,17 @@
-import XCTest
+import Foundation
+import Testing
 @testable import HeadroomCore
 
-final class UpdatePolicyTests: XCTestCase {
-    func testFeedIsThePublicRawAppcastOnMain() {
-        XCTAssertEqual(UpdatePolicy.feedURL.absoluteString, "https://raw.githubusercontent.com/il-figlio/headroom/main/appcast.xml")
-        XCTAssertEqual(UpdatePolicy.repository, "il-figlio/headroom")
+@Suite struct UpdatePolicyTests {
+    @Test func feedIsThePublicRawAppcastOnMain() {
+        #expect(UpdatePolicy.feedURL.absoluteString == "https://raw.githubusercontent.com/il-figlio/headroom/main/appcast.xml")
+        #expect(UpdatePolicy.repository == "il-figlio/headroom")
     }
 
-    func testAllowsOnlyThisRepositorysPublicReleaseZips() {
+    @Test func allowsOnlyThisRepositorysPublicReleaseZips() {
         let allowed = "https://github.com/il-figlio/headroom/releases/download/v0.9.0/Headroom-0.9.0-universal.zip"
-        XCTAssertTrue(UpdatePolicy.allowsArchive(URL(string: allowed)))
-        XCTAssertTrue(UpdatePolicy.allowsArchive(URL(string: "https://github.com/il-figlio/headroom/releases/download/v10.20.30/Headroom.zip")))
+        #expect(UpdatePolicy.allowsArchive(URL(string: allowed)))
+        #expect(UpdatePolicy.allowsArchive(URL(string: "https://github.com/il-figlio/headroom/releases/download/v10.20.30/Headroom.zip")))
         for value in [allowed.replacingOccurrences(of: "https:", with: "http:"),
                       allowed.replacingOccurrences(of: "github.com", with: "github.com.evil.test"),
                       allowed.replacingOccurrences(of: "github.com", with: "user@github.com"),
@@ -30,18 +31,18 @@ final class UpdatePolicyTests: XCTestCase {
                       "https://release-assets.githubusercontent.com/github-production-release-asset/1/Headroom.zip",
                       // The pre-public private path is no longer accepted by public builds.
                       "https://api.github.com/repos/il-figlio/headroom/releases/assets/1234"] {
-            XCTAssertFalse(UpdatePolicy.allowsArchive(URL(string: value)), value)
+            #expect(!UpdatePolicy.allowsArchive(URL(string: value)), "\(value)")
         }
-        XCTAssertFalse(UpdatePolicy.allowsArchive(nil))
+        #expect(!UpdatePolicy.allowsArchive(nil))
     }
 
-    func testRecognizesGitHubsReleaseAssetRedirectHosts() {
-        XCTAssertTrue(UpdatePolicy.allowsDownloadRedirect(URL(string: "https://release-assets.githubusercontent.com/github-production-release-asset/1/abc?sp=r&sig=x")))
-        XCTAssertTrue(UpdatePolicy.allowsDownloadRedirect(URL(string: "https://objects.githubusercontent.com/github-production-release-asset-2e65be/1/abc?X-Amz-Signature=x")))
+    @Test func recognizesGitHubsReleaseAssetRedirectHosts() {
+        #expect(UpdatePolicy.allowsDownloadRedirect(URL(string: "https://release-assets.githubusercontent.com/github-production-release-asset/1/abc?sp=r&sig=x")))
+        #expect(UpdatePolicy.allowsDownloadRedirect(URL(string: "https://objects.githubusercontent.com/github-production-release-asset-2e65be/1/abc?X-Amz-Signature=x")))
         for value in ["http://release-assets.githubusercontent.com/a", "https://release-assets.githubusercontent.com/",
                       "https://release-assets.githubusercontent.com.evil.test/a", "https://evil.githubusercontent.com/a",
                       "https://raw.githubusercontent.com/il-figlio/headroom/main/appcast.xml"] {
-            XCTAssertFalse(UpdatePolicy.allowsDownloadRedirect(URL(string: value)), value)
+            #expect(!UpdatePolicy.allowsDownloadRedirect(URL(string: value)), "\(value)")
         }
     }
 }

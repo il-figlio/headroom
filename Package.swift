@@ -12,13 +12,8 @@ let package = Package(
         .target(name: "HeadroomCore", dependencies: ["CMemory", "CSQLite"]),
         .executableTarget(name: "Headroom", dependencies: ["HeadroomCore", .product(name: "Sparkle", package: "Sparkle")],
                           linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]),
-        // Swift Testing ships with the toolchain, so these run with Command Line Tools alone.
+        // The only test target. Swift Testing ships with the toolchain, so every
+        // test runs with Command Line Tools alone; there is no XCTest target.
         .testTarget(name: "HeadroomCoreChecks", dependencies: ["HeadroomCore"])
     ]
 )
-
-// XCTest needs full Xcode. `HEADROOM_SKIP_XCTEST=1` (set by scripts/check.sh) builds
-// without it so the Swift Testing checks still run on a Command Line Tools-only Mac.
-if Context.environment["HEADROOM_SKIP_XCTEST"] == nil {
-    package.targets.append(.testTarget(name: "HeadroomCoreTests", dependencies: ["HeadroomCore"]))
-}
