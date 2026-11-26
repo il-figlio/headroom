@@ -149,7 +149,10 @@ private struct LimitsSettings: View {
                 Caption("When on, Headroom reads the sign-ins these tools saved on this Mac and asks the providers how much of your plan is used. These usage endpoints are unofficial and may change or stop working. Headroom never shows, copies, refreshes or writes your tokens.")
             }
             Section {
-                if let detected {
+                if !preferences.limitsEnabled {
+                    // Off means off: not even a check for which sign-ins exist.
+                    Text("Turn on Limits to see which sign-ins Headroom found.").foregroundStyle(.secondary)
+                } else if let detected {
                     if detected.names.isEmpty {
                         Text("No supported sign-ins found").foregroundStyle(.secondary)
                     } else {
@@ -167,7 +170,7 @@ private struct LimitsSettings: View {
             } header: {
                 Text("Sign-ins on this Mac")
             } footer: {
-                Caption("Found by checking which sign-in files exist and, while Limits and Keychain use are on, whether Claude Code's Keychain item exists. Sign-ins are only opened while Limits is on.")
+                Caption("While Limits is on, Headroom finds these by checking which sign-in files exist and, with Keychain use on, whether Claude Code's Keychain item exists. While Limits is off, it doesn't look for sign-ins at all.")
             }
             Section {
                 Link("How Headroom handles your data", destination: AppBrand.privacyURL)
@@ -177,12 +180,18 @@ private struct LimitsSettings: View {
             .task(id: [preferences.limitsEnabled, preferences.claudeKeychainEnabled]) { await detect() }
     }
 
+    /// Looks for sign-ins only while Limits is on (screenshot mode, which
+    /// reports Limits as on, shows demo names instead).
     private func detect() async {
+        guard preferences.limitsEnabled else { detected = nil; return }
         if ScreenshotExport.active {
             detected = .init(names: ["Codex", "Claude (Ante: personal, work)"], claudeCodeHidden: true)
             return
         }
-        detected = await Task.detached(priority: .utility) { QuotaSources.detect() }.value
+        let found = await Task.detached(priority: .utility) { QuotaSources.detect() }.value
+        // Limits may have been turned off while the check ran.
+        guard !Task.isCancelled, preferences.limitsEnabled else { return }
+        detected = found
     }
 }
 
