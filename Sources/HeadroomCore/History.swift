@@ -120,36 +120,200 @@ public final class HistoryStore {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Headroom", isDirectory: true)
     }
     static let legacyLogHeader = "# Headroom observations"
-    /// The app's own data files. Anything else in the legacy folder (such as the
-    /// development `signing/` keychain from scripts/sign.sh) stays where it is.
-    static let dataFiles = ["history.sqlite", "history.sqlite-wal", "history.sqlite-shm", "quota-cache.json", "log.md"]
+    /// Written to the new folder before the first file moves and removed after
+    /// the last, so a launch that finds it finishes an interrupted move.
+    static let migrationMarker = ".moving-from-legacy-folder"
+    private static let databaseName = "history.sqlite"
+    private static let databaseSidecars = ["history.sqlite-wal", "history.sqlite-shm"]
 
-    /// Moves this app's files out of the legacy folder once. Returns true when
-    /// anything moved. Does nothing if the legacy log.md isn't ours or the new
-    /// folder already has history or a log. Call before anything opens
-    /// history or the cache.
-    @discardableResult
-    public static func migrateLegacyDirectory(from legacy: URL = legacyDirectory, to current: URL = defaultDirectory) -> Bool {
+    /// What a launch should do about the legacy folder.
+    public enum LegacyMigrationDecision: Equatable {
+        /// No other copy is running: move whatever there is to move.
+        case migrate
+        /// Another copy is running and nothing is waiting in the legacy folder.
+        case proceed
+        /// Another copy is running and the legacy folder still holds this app's
+        /// files, which that copy may have open. Leave both folders alone: moving
+        /// would pull the database from under it, and opening the new folder
+        /// would start an empty history there that blocks the move for good.
+        case wait
+    }
+    /// `runningPIDs` are the running applications with this app's bundle
+    /// identifier (builds up to 0.8.0 share it); `pending` is only asked when
+    /// one of them isn't this process.
+    public static func legacyMigrationDecision(ownPID: Int32, runningPIDs: [Int32],
+                                               pending: @autoclosure () -> Bool) -> LegacyMigrationDecision {
+        guard runningPIDs.contains(where: { $0 != ownPID }) else { return .migrate }
+        return pending() ? .wait : .proceed
+    }
+
+    /// True when `migrateLegacyDirectory` would move something: the legacy
+    /// log.md is this app's, and the new folder either has no history and no
+    /// log yet or holds the marker of an interrupted move.
+    public static func legacyMigrationPending(from legacy: URL = legacyDirectory, to current: URL = defaultDirectory) -> Bool {
         let fm = FileManager.default
-        guard !fm.fileExists(atPath: current.appendingPathComponent("history.sqlite").path),
-              !fm.fileExists(atPath: current.appendingPathComponent("log.md").path),
+        let interrupted = fm.fileExists(atPath: current.appendingPathComponent(migrationMarker).path)
+        let hasHistory = fm.fileExists(atPath: current.appendingPathComponent(databaseName).path)
+            || fm.fileExists(atPath: current.appendingPathComponent("log.md").path)
+        guard interrupted || !hasHistory,
               let handle = try? FileHandle(forReadingFrom: legacy.appendingPathComponent("log.md")) else { return false }
         let prefix = (try? handle.read(upToCount: legacyLogHeader.utf8.count)) ?? Data()
         try? handle.close()
-        guard String(decoding: prefix, as: UTF8.self) == legacyLogHeader,
-              (try? fm.createDirectory(at: current, withIntermediateDirectories: true)) != nil else { return false }
+        return String(decoding: prefix, as: UTF8.self) == legacyLogHeader
+    }
+
+    /// Moves this app's files (history, quota cache, kept archives, log) out of
+    /// the legacy folder. Returns true when anything moved. Does nothing unless
+    /// the legacy log.md is this app's, and then only when the new folder has no
+    /// history or log yet, or when an earlier move was interrupted. Nothing in
+    /// the new folder is ever replaced, and anything else in the legacy folder
+    /// (such as the development `signing/` keychain from scripts/sign.sh) stays
+    /// where it is. Call before anything opens history or the cache.
+    ///
+    /// The write-ahead log is folded into history.sqlite first, so one rename
+    /// carries every committed sample. log.md goes last: while anything is left
+    /// to move, the legacy folder still says whose it is.
+    @discardableResult
+    public static func migrateLegacyDirectory(from legacy: URL = legacyDirectory, to current: URL = defaultDirectory) -> Bool {
+        migrateLegacyDirectory(from: legacy, to: current, stoppingAfter: .max)
+    }
+
+    /// `stoppingAfter` is for checks: the call returns after that many changes
+    /// on disk, leaving things as a kill at that point would.
+    @discardableResult
+    static func migrateLegacyDirectory(from legacy: URL, to current: URL, stoppingAfter limit: Int) -> Bool {
+        let fm = FileManager.default
+        let marker = current.appendingPathComponent(migrationMarker)
+        let resuming = fm.fileExists(atPath: marker.path)
+        guard legacyMigrationPending(from: legacy, to: current) else {
+            if resuming {
+                // log.md moves last, so a marker without it means only the tidying was left.
+                if isEmptyFolder(legacy) { try? fm.removeItem(at: legacy) }
+                try? fm.removeItem(at: marker)
+            }
+            return false
+        }
+        guard (try? fm.createDirectory(at: current, withIntermediateDirectories: true)) != nil else { return false }
+        var work = LegacyMove(budget: limit)
+        do {
+            if !resuming {
+                try work.spend()
+                // Without the marker a later launch couldn't tell an interrupted move from a new history.
+                guard (try? Data("Headroom is moving its files here from \(legacy.path).\n".utf8).write(to: marker, options: .atomic)) != nil else { return false }
+            }
+            // A database that is busy belongs to a copy that is still running; a later launch moves it.
+            guard try moveDatabase(&work, from: legacy, to: current) else { return work.moved }
+            try work.move(legacy.appendingPathComponent("quota-cache.json"), to: current.appendingPathComponent("quota-cache.json"))
+            try moveArchives(&work, from: legacy, to: current)
+            // A failed rename is retried by the next launch, which needs log.md and the marker in place.
+            guard !work.failed else { return work.moved }
+            try work.move(legacy.appendingPathComponent("log.md"), to: current.appendingPathComponent("log.md"))
+            // Leave nothing behind for the other app's uninstall to find, but only if it's empty.
+            if isEmptyFolder(legacy) { try work.remove(legacy) }
+            if !work.failed { try work.remove(marker) }
+        } catch {}
+        return work.moved
+    }
+
+    /// Finder's .DS_Store doesn't count as content.
+    private static func isEmptyFolder(_ url: URL) -> Bool {
+        (try? FileManager.default.contentsOfDirectory(atPath: url.path))?.filter { $0 != ".DS_Store" }.isEmpty == true
+    }
+
+    /// One pass over the legacy folder. Nothing at a destination is replaced.
+    private struct LegacyMove {
+        struct Stopped: Error {}
+        let fm = FileManager.default
+        var budget: Int
         var moved = false
-        for name in dataFiles where fm.fileExists(atPath: legacy.appendingPathComponent(name).path) {
-            if (try? fm.moveItem(at: legacy.appendingPathComponent(name), to: current.appendingPathComponent(name))) != nil {
+        var failed = false
+
+        func exists(_ url: URL) -> Bool { fm.fileExists(atPath: url.path) }
+        func isDirectory(_ url: URL) -> Bool {
+            var directory: ObjCBool = false
+            return fm.fileExists(atPath: url.path, isDirectory: &directory) && directory.boolValue
+        }
+        mutating func spend() throws {
+            guard budget > 0 else { throw Stopped() }
+            budget -= 1
+        }
+        mutating func move(_ source: URL, to destination: URL) throws {
+            guard exists(source), !exists(destination) else { return }
+            try spend()
+            if (try? fm.moveItem(at: source, to: destination)) != nil {
                 moved = true
+            } else if exists(source) || !exists(destination) {
+                // (Otherwise another launch moved it between the test and the rename.)
+                failed = true
             }
         }
-        // Leave nothing behind for the other app's uninstall to find, but only if it's empty.
-        if (try? fm.contentsOfDirectory(atPath: legacy.path))?.filter({ $0 != ".DS_Store" }).isEmpty == true {
-            try? fm.removeItem(at: legacy)
+        mutating func remove(_ url: URL) throws {
+            guard exists(url) else { return }
+            try spend()
+            if (try? fm.removeItem(at: url)) == nil && exists(url) { failed = true }
         }
-        return moved
     }
+
+    /// False when the legacy database is in use. The -wal can hold the newest
+    /// committed samples (the app doesn't close the database at quit), and a
+    /// database opened without it loses them, so the three files move as a set:
+    /// the -wal is folded in, history.sqlite moves, and -wal and -shm follow
+    /// only to sit next to it. Nothing moves if any of the three is already in
+    /// the new folder, because pairing files of two databases can corrupt both.
+    private static func moveDatabase(_ work: inout LegacyMove, from legacy: URL, to current: URL) throws -> Bool {
+        let source = legacy.appendingPathComponent(databaseName)
+        let destination = current.appendingPathComponent(databaseName)
+        if work.exists(source) {
+            guard !([databaseName] + databaseSidecars).contains(where: { work.exists(current.appendingPathComponent($0)) }) else { return true }
+            guard foldWriteAheadLog(source) else { return false }
+            try work.move(source, to: destination)
+        }
+        // After a fold the sidecars are empty; if it couldn't run (not a
+        // readable database) they are the rest of the data. Either way they
+        // belong with a database that has moved, including one an interrupted
+        // launch moved.
+        guard !work.exists(source), work.exists(destination) else { return true }
+        for name in databaseSidecars {
+            try work.move(legacy.appendingPathComponent(name), to: current.appendingPathComponent(name))
+        }
+        return true
+    }
+
+    /// Checkpoints the legacy database so history.sqlite holds every committed
+    /// row by itself. Returns false only when another connection keeps it busy.
+    private static func foldWriteAheadLog(_ database: URL) -> Bool {
+        // Only a real database is handed to SQLite, which discards a -wal it
+        // can't pair with one. Anything else moves as plain files.
+        guard let handle = try? FileHandle(forReadingFrom: database) else { return true }
+        let magic = (try? handle.read(upToCount: 16)) ?? Data()
+        try? handle.close()
+        guard magic == Data("SQLite format 3\0".utf8) else { return true }
+        var db: OpaquePointer?
+        var status = sqlite3_open_v2(database.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil)
+        if status == SQLITE_OK {
+            sqlite3_busy_timeout(db, 1000)
+            // A connection learns the journal mode on its first read; a checkpoint before that does nothing.
+            status = sqlite3_exec(db, "SELECT count(*) FROM sqlite_master", nil, nil, nil)
+        }
+        if status == SQLITE_OK { status = sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_TRUNCATE, nil, nil) }
+        sqlite3_close(db)
+        return status != SQLITE_BUSY && status != SQLITE_LOCKED
+    }
+
+    /// Archives the user chose to keep. With no Archives folder in the new
+    /// place the whole folder moves; otherwise each archive that isn't there yet.
+    private static func moveArchives(_ work: inout LegacyMove, from legacy: URL, to current: URL) throws {
+        let source = legacy.appendingPathComponent("Archives", isDirectory: true)
+        let destination = current.appendingPathComponent("Archives", isDirectory: true)
+        guard work.isDirectory(source) else { return }
+        guard work.exists(destination) else { return try work.move(source, to: destination) }
+        guard work.isDirectory(destination) else { return }
+        for name in ((try? work.fm.contentsOfDirectory(atPath: source.path)) ?? []).sorted() where name != ".DS_Store" {
+            try work.move(source.appendingPathComponent(name), to: destination.appendingPathComponent(name))
+        }
+        if isEmptyFolder(source) { try work.remove(source) }
+    }
+
     public let directory: URL
     public var logURL: URL { directory.appendingPathComponent("log.md") }
     /// record() rewrites log.md at most this often; refreshLog() writes on demand.

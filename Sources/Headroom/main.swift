@@ -21,11 +21,57 @@ if CommandLine.arguments.contains("--check-for-updates") {
     }
 }
 
-// Everything below may read or write the data folder.
-HistoryStore.migrateLegacyDirectory()
+// These modes don't use the data folder, so they run before anything in it can move.
+if CommandLine.arguments.contains("--diagnose") {
+    struct Diagnostic: Codable {
+        let memory: SystemMemory
+        let disk: DiskSpace
+        let apps: [AppMemory]
+        let notchAvailable: Bool
+    }
+    let output = Diagnostic(memory: .read(), disk: .read(), apps: AppGrouping.group(apps: MemoryMonitor.identities(), processes: ProcessMemory.read()),
+                            notchAvailable: NSScreen.screens.contains { $0.safeAreaInsets.top > 0 })
+    let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    FileHandle.standardOutput.write(try encoder.encode(output))
+    exit(output.memory.valid ? 0 : 1)
+}
+
+// Integration harness can only act on the dedicated, disposable test fixture.
+if let index = CommandLine.arguments.firstIndex(of: "--test-quit-fixture"), CommandLine.arguments.count > index + 1 {
+    guard let pid = Int32(CommandLine.arguments[index + 1]),
+          let app = NSRunningApplication(processIdentifier: pid),
+          app.bundleIdentifier == "org.headroom.testfixture" else { exit(2) }
+    let identity = AppIdentity(pid: pid, name: app.localizedName ?? "Fixture", bundlePath: app.bundleURL?.path ?? "",
+                               bundleIdentifier: app.bundleIdentifier, launchDate: app.launchDate)
+    let result = AppTermination.request(identity, force: CommandLine.arguments.contains("--force"))
+    print(result ? "Quit request accepted" : "Quit request rejected")
+    exit(result ? 0 : 1)
+}
+
+// Everything below may read or write the data folder. A copy that is already
+// running (builds up to 0.8.0 have the same bundle identifier) may have the
+// legacy database open, so files move only when this is the only one: the same
+// test AppDelegate uses to end a second launch.
+let runningCopies = Bundle.main.bundleIdentifier.map {
+    NSRunningApplication.runningApplications(withBundleIdentifier: $0).map(\.processIdentifier)
+} ?? []
+let migration = HistoryStore.legacyMigrationDecision(ownPID: getpid(), runningPIDs: runningCopies,
+                                                     pending: HistoryStore.legacyMigrationPending())
+if migration == .migrate { HistoryStore.migrateLegacyDirectory() }
 
 if CommandLine.arguments.contains("--history-dir") {
     print(HistoryStore.defaultDirectory.path); exit(0)
+}
+if migration == .wait {
+    // The running copy still has this app's history in the legacy folder.
+    // Opening the new folder now would start an empty history there, and the
+    // move never replaces one. AppDelegate would end this launch anyway;
+    // leaving here also covers the other copy quitting in between.
+    if !Set(CommandLine.arguments).isDisjoint(with: ["--scan", "--capture", "--report"]) {
+        FileHandle.standardError.write(Data("Headroom is running and its history hasn't moved to \(HistoryStore.defaultDirectory.path) yet. Quit Headroom, then run this again.\n".utf8))
+        exit(1)
+    }
+    exit(0)
 }
 if CommandLine.arguments.contains("--scan") {
     do {
@@ -56,32 +102,6 @@ if CommandLine.arguments.contains("--capture") || CommandLine.arguments.contains
     } catch {
         FileHandle.standardError.write(Data("History error: \(error.localizedDescription)\n".utf8)); exit(1)
     }
-}
-
-if CommandLine.arguments.contains("--diagnose") {
-    struct Diagnostic: Codable {
-        let memory: SystemMemory
-        let disk: DiskSpace
-        let apps: [AppMemory]
-        let notchAvailable: Bool
-    }
-    let output = Diagnostic(memory: .read(), disk: .read(), apps: AppGrouping.group(apps: MemoryMonitor.identities(), processes: ProcessMemory.read()),
-                            notchAvailable: NSScreen.screens.contains { $0.safeAreaInsets.top > 0 })
-    let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    FileHandle.standardOutput.write(try encoder.encode(output))
-    exit(output.memory.valid ? 0 : 1)
-}
-
-// Integration harness can only act on the dedicated, disposable test fixture.
-if let index = CommandLine.arguments.firstIndex(of: "--test-quit-fixture"), CommandLine.arguments.count > index + 1 {
-    guard let pid = Int32(CommandLine.arguments[index + 1]),
-          let app = NSRunningApplication(processIdentifier: pid),
-          app.bundleIdentifier == "org.headroom.testfixture" else { exit(2) }
-    let identity = AppIdentity(pid: pid, name: app.localizedName ?? "Fixture", bundlePath: app.bundleURL?.path ?? "",
-                               bundleIdentifier: app.bundleIdentifier, launchDate: app.launchDate)
-    let result = AppTermination.request(identity, force: CommandLine.arguments.contains("--force"))
-    print(result ? "Quit request accepted" : "Quit request rejected")
-    exit(result ? 0 : 1)
 }
 
 let app = NSApplication.shared
