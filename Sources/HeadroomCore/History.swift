@@ -327,7 +327,7 @@ public final class HistoryStore {
     private var consumerCache: ConsumerScan?
     private var dataVersion: Int64?
 
-    /// Samples, events and hourly agent usage older than this are deleted.
+    /// Samples, events, hourly agent usage and saved agent sessions older than this are deleted.
     public static let retention: TimeInterval = 30 * 86400
 
     /// `now` is the clock retention is measured against when the store opens.
@@ -361,7 +361,8 @@ public final class HistoryStore {
         pruneExpired(now: now)
     }
     /// Retention on open: record() and agent scans prune as they write, which
-    /// never happens while recording is paused or Agents is off. Runs before
+    /// never happens while recording is paused or Agents is off (saved agent
+    /// sessions included). Runs before
     /// anything is cached. Best effort, because a busy or full disk shouldn't
     /// keep history from opening; the next open or write tries again.
     private func pruneExpired(now: Date) {
@@ -370,6 +371,9 @@ public final class HistoryStore {
             try execute("DELETE FROM samples WHERE ts < ?", [cutoff])
             try execute("DELETE FROM events WHERE ts < ?", [cutoff])
             try execute("DELETE FROM agent_usage WHERE hour < ?", [cutoff])
+            // Same rule as AgentScanner.sessionRetention, for when Agents is
+            // off and no scan runs. A row with no dates at all can't be aged.
+            try execute("DELETE FROM agent_sessions WHERE COALESCE(last_event_at, started_at) < ?", [cutoff])
         }
     }
     /// Databases written before storage tracking lack the disk columns.
@@ -782,8 +786,12 @@ public final class HistoryStore {
                      .integer(bucket.tokens[kind] ?? 0), .number(bucket.cost[kind] ?? 0)])
             }
         }
-        // Retention matches the samples window; readers only need 48h.
-        try execute("DELETE FROM agent_usage WHERE hour < ?", [.number(Date().addingTimeInterval(-30 * 86400).timeIntervalSince1970)])
+        // Retention matches the samples window; readers only need 48h. Measured
+        // from the newest hour written (never later than the clock), so the
+        // rows just added are never the ones removed; open() applies the limit
+        // against the clock.
+        let newest = min(burn.map(\.hour).max() ?? Date(), Date())
+        try execute("DELETE FROM agent_usage WHERE hour < ?", [.number(newest.addingTimeInterval(-Self.retention).timeIntervalSince1970)])
     }
 
     /// Raw SQL for tests (fault injection, legacy-schema fixtures); returns

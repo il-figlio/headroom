@@ -121,6 +121,24 @@ import Testing
         #expect(summary.sampleCount == 2)
         #expect(summary.latestPressure == .warning)
     }
+    /// Saved agent sessions age out on open too, so they go while Agents is off and no scan runs.
+    @Test func openingPrunesAgentSessionsQuietForThirtyDays() throws {
+        let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        func session(_ name: String, last: Date?) -> AgentSession {
+            var session = AgentSession(kind: .claude, sessionId: name, projectDir: "/Users/demo/\(name)",
+                                       filePath: "/Users/demo/.claude/projects/\(name).jsonl")
+            session.startedAt = last; session.lastEventAt = last
+            return session
+        }
+        do {
+            let store = try HistoryStore(directory: dir, now: base)
+            try store.saveAgentSessions([session("old", last: base.addingTimeInterval(-31 * 86400)),
+                                         session("recent", last: base.addingTimeInterval(-86400)),
+                                         session("undated", last: nil)])
+        }
+        let store = try HistoryStore(directory: dir, now: base)
+        #expect(try store.loadAgentSessions().map(\.sessionId).sorted() == ["recent", "undated"])
+    }
     /// A row exactly thirty days old stays; a second older and it goes.
     @Test func openingAtTheRetentionBoundaryKeepsTheRow() throws {
         let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }

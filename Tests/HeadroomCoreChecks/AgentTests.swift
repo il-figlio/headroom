@@ -232,7 +232,7 @@ private final class FixtureProvider: AgentProvider, ModelTokenTracking {
 
     @Test func agentUsageRecordAndLoadAccumulates() throws {
         let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try HistoryStore(directory: dir)
+        let store = try HistoryStore(directory: dir, now: now)
         // The store deletes agent_usage rows older than 30 days by the real
         // clock whenever it writes, so these hours are taken from it.
         let now = AgentScanner.hourBucket(Date())
@@ -266,7 +266,7 @@ private final class FixtureProvider: AgentProvider, ModelTokenTracking {
 
     @Test func historyStoresSessionsAndOffsets() throws {
         let dir = try directory(); defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try HistoryStore(directory: dir)
+        let store = try HistoryStore(directory: dir, now: now)
         var session = AgentSession(kind: .claude, sessionId: "s1", projectDir: "/tmp/p", filePath: "/tmp/f.jsonl")
         session.pid = 99
         session.startedAt = now.addingTimeInterval(-100)

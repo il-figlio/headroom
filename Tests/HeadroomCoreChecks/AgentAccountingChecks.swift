@@ -362,10 +362,10 @@ import Testing
             + claudeLine(id: "msg_2", request: "req_2", at: now, input: 5, output: 0)).write(to: project.appendingPathComponent("s.jsonl"))
         let first = try claudeHome(root).scanner.scan(now: now, calendar: utc, processes: [])
         #expect(first.snapshot.todayTokens == 5)
-        try HistoryStore(directory: history).commitAgentScan(sessions: first.sessions, offsets: first.offsets,
+        try HistoryStore(directory: history, now: now).commitAgentScan(sessions: first.sessions, offsets: first.offsets,
                                                              identities: first.identities, usage: first.usage)
 
-        let store = try HistoryStore(directory: history)
+        let store = try HistoryStore(directory: history, now: now)
         let burn = try store.loadAgentUsage(since: now.addingTimeInterval(-48 * 3600))
         let second = try claudeHome(root).scanner.scan(now: now, previousSessions: try store.loadAgentSessions(),
                                                        offsets: try store.loadScanOffsets(), identities: try store.loadScanIdentities(),

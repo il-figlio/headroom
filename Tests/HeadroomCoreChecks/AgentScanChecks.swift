@@ -83,11 +83,11 @@ func agentScanResumesALineSplitAcrossScans(split: Int) throws {
     let file = root.appendingPathComponent("d.jsonl")
     try usageLine.prefix(48).write(to: file)
     let first = scanner(root).scan(now: now, processes: [])
-    try HistoryStore(directory: history).commitAgentScan(sessions: first.sessions, offsets: first.offsets,
+    try HistoryStore(directory: history, now: now).commitAgentScan(sessions: first.sessions, offsets: first.offsets,
                                                          identities: first.identities, usage: first.usage)
     try append(file, usageLine.dropFirst(48))
 
-    let store = try HistoryStore(directory: history)
+    let store = try HistoryStore(directory: history, now: now)
     let second = scanner(root).scan(now: now, previousSessions: try store.loadAgentSessions(),
                                     offsets: try store.loadScanOffsets(),
                                     identities: try store.loadScanIdentities(), processes: [])
@@ -288,7 +288,7 @@ private func recentUsageLine() -> Data {
     let history = try tempDirectory(); defer { try? FileManager.default.removeItem(at: history) }
     let file = root.appendingPathComponent("d.jsonl")
     try recentUsageLine().write(to: file)
-    let store = try HistoryStore(directory: history)
+    let store = try HistoryStore(directory: history, now: now)
     let scan = scanner(root)
     let now = Date()
     let first = scan.scan(now: now, processes: [])
@@ -362,7 +362,7 @@ private func recentUsageLine() -> Data {
     let file = root.appendingPathComponent("s.jsonl")
     let usageLine = recentUsageLine()
     try usageLine.write(to: file)
-    let store = try HistoryStore(directory: history)
+    let store = try HistoryStore(directory: history, now: now)
     let scan = scanner(root)
     let now = Date()
     let first = scan.scan(now: now, processes: [])
@@ -407,26 +407,28 @@ private func recentUsageLine() -> Data {
     let result = scanner(root).scan(now: now, processes: [])
     #expect(Set(result.sessions.map(\.id)) == ["other:same"])
     #expect(result.sessions.count == 2)
-    let store = try HistoryStore(directory: history)
+    let store = try HistoryStore(directory: history, now: now)
     try store.commitAgentScan(sessions: result.sessions, offsets: result.offsets, identities: result.identities, usage: result.usage)
-    let loaded = try HistoryStore(directory: history).loadAgentSessions()
+    let loaded = try HistoryStore(directory: history, now: now).loadAgentSessions()
     #expect(Set(loaded.map(\.filePath)) == Set(result.sessions.map(\.filePath)))
 }
 
 @Test func agentSessionsTableMigratesFromIdKey() throws {
     let history = try tempDirectory(); defer { try? FileManager.default.removeItem(at: history) }
+    // The rows below are dated 50–400 s after 1970; retention is measured from here.
+    let fixtureEra = Date(timeIntervalSince1970: 1000)
     func row(_ id: String, _ path: String, _ last: String, input: Int) -> String {
         "('\(id)', 'other', '\(id)', '/p', NULL, \(last), \(last), '\(path)', 10, '[\"m\"]', '{\"input\":\(input),\"output\":0,\"cacheRead\":0,\"cacheWrite\":0}', '{}', NULL, 0, 'ended')"
     }
     do {
         // Rebuild the schema-1 table exactly as older builds created it.
-        let store = try HistoryStore(directory: history)
+        let store = try HistoryStore(directory: history, now: fixtureEra)
         try store.executeForTesting("DROP TABLE agent_sessions")
         try store.executeForTesting("CREATE TABLE agent_sessions (id TEXT PRIMARY KEY, kind TEXT, session_id TEXT, project_dir TEXT, pid INTEGER, started_at REAL, last_event_at REAL, file_path TEXT, file_offset INTEGER, models_json TEXT, tokens_json TEXT, tools_json TEXT, cost_usd REAL, unpriced_tokens INTEGER, health TEXT)")
         try store.executeForTesting("INSERT INTO agent_sessions VALUES \(row("a1", "/x/a.jsonl", "100", input: 1)), \(row("a2", "/x/a.jsonl", "200", input: 2)), \(row("b1", "/x/b.jsonl", "NULL", input: 3)), \(row("b2", "/x/b.jsonl", "50", input: 4)), \(row("c", "/x/c.jsonl", "300", input: 5))")
         try store.executeForTesting("PRAGMA user_version=1")
     }
-    let store = try HistoryStore(directory: history)
+    let store = try HistoryStore(directory: history, now: fixtureEra)
     #expect(try store.executeForTesting("PRAGMA user_version") == [["2"]])
     #expect(try store.executeForTesting("SELECT name FROM pragma_table_info('agent_sessions') WHERE pk > 0") == [["file_path"]])
     let loaded = Dictionary(uniqueKeysWithValues: try store.loadAgentSessions().map { ($0.filePath, $0) })
@@ -438,14 +440,14 @@ private func recentUsageLine() -> Data {
     try store.executeForTesting("INSERT INTO agent_sessions VALUES \(row("a2", "/y/a.jsonl", "400", input: 6))")
     // Reopening (as after an older build reset user_version) is a no-op.
     try store.executeForTesting("PRAGMA user_version=1")
-    let reopened = try HistoryStore(directory: history)
+    let reopened = try HistoryStore(directory: history, now: fixtureEra)
     #expect(try reopened.loadAgentSessions().count == 4)
     #expect(try reopened.executeForTesting("PRAGMA user_version") == [["2"]])
 }
 
 @Test func agentScanIdentitiesSurviveOldStyleSave() throws {
     let history = try tempDirectory(); defer { try? FileManager.default.removeItem(at: history) }
-    let store = try HistoryStore(directory: history)
+    let store = try HistoryStore(directory: history, now: now)
     // A database that only ever stored offsets loads with no identities.
     try store.saveScanOffsets(["/f.jsonl": 5])
     #expect(try store.loadScanIdentities().isEmpty)
