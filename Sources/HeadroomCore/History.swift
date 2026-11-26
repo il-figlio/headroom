@@ -305,6 +305,7 @@ public final class HistoryStore {
         var latestChartPoint: TrendPoint?
         var latestDiskPoint: DiskPoint?
         var firstDisk: (date: Date, free: UInt64)?
+        var diskFit = LineFit()
         func addDuration(until date: Date) {
             guard let (time, pressure) = previous, pressure != .unknown else { return }
             // Sleep and downtime aren't observed intervals.
@@ -340,6 +341,9 @@ public final class HistoryStore {
                 result.latestDiskPurgeable = purgeable
                 result.latestDiskTotal = UInt64(max(0, row.diskTotal))
                 if firstDisk == nil { firstDisk = (date, free) }
+                // Hours and GB relative to the first reading keep the sums small.
+                diskFit.add(x: date.timeIntervalSince(firstDisk!.date) / 3600,
+                            y: (Double(free) - Double(firstDisk!.free)) / 1_073_741_824)
             }
             for app in apps {
                 // Updated in place: this loop runs for every app in every sample of the day.
@@ -367,16 +371,15 @@ public final class HistoryStore {
                 result.diskPoints.append(latestDiskPoint)
             }
         }
-        // Free-space shrink rate drives the days-until-full estimate.
-        if let firstDisk, let latestDiskPoint, let free = result.latestDiskFree {
-            let hours = latestDiskPoint.date.timeIntervalSince(firstDisk.date) / 3600
-            if hours >= 1 {
-                let shrinkGB = (Double(firstDisk.free) - Double(free)) / 1_073_741_824
-                result.diskRateGBPerDay = shrinkGB / hours * 24
-                if result.diskRateGBPerDay! > 0.01 {
-                    result.daysUntilFull = Double(free) / 1_073_741_824 / result.diskRateGBPerDay!
-                }
-            }
+        // Free-space shrink rate drives the days-until-full estimate. A line
+        // fitted through every reading, over at least `diskRateMinimumSpan`, so
+        // one large download doesn't read as a daily rate.
+        if let firstDisk, let latestDiskPoint, let free = result.latestDiskFree,
+           latestDiskPoint.date.timeIntervalSince(firstDisk.date) >= Self.diskRateMinimumSpan,
+           let slope = diskFit.slope {
+            let rate = slope == 0 ? 0 : -slope * 24
+            result.diskRateGBPerDay = rate
+            if rate > 0.01 { result.daysUntilFull = Double(free) / 1_073_741_824 / rate }
         }
         // Don't recommend growth for an app absent from the current snapshot.
         let current = Set(result.latestApps.map(\.key))
@@ -388,6 +391,22 @@ public final class HistoryStore {
             result.recommendations = [.init(title: "History hasn't updated recently", detail: "The latest recorded sample is more than three minutes old. Resume history or reopen Headroom to get recommendations for your current workload.")]
         }
         return result
+    }
+
+    /// Disk readings must span at least this long before a fill rate is reported.
+    public static let diskRateMinimumSpan: TimeInterval = 6 * 3600
+
+    /// Running sums for a least-squares line through (x, y) points.
+    private struct LineFit {
+        private var n = 0.0, sumX = 0.0, sumY = 0.0, sumXX = 0.0, sumXY = 0.0
+        mutating func add(x: Double, y: Double) {
+            n += 1; sumX += x; sumY += y; sumXX += x * x; sumXY += x * y
+        }
+        /// nil until the points span more than one x.
+        var slope: Double? {
+            let spread = n * sumXX - sumX * sumX
+            return spread > 0 ? (n * sumXY - sumX * sumY) / spread : nil
+        }
     }
 
     public func loadConsumers() throws -> ConsumerScan {

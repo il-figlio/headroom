@@ -14,6 +14,14 @@ import CSQLite
     func directory() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("headroom-tests-\(UUID().uuidString)")
     }
+    /// One reading every ten minutes from `hours.lowerBound` to `hours.upperBound`.
+    func record(_ store: HistoryStore, hours: ClosedRange<Double>, free: (Double) -> Double) throws {
+        for step in Int(hours.lowerBound * 6)...Int(hours.upperBound * 6) {
+            let hour = Double(step) / 6
+            _ = try store.record(memory: memory(), apps: [], disk: disk(free: UInt64(free(hour) * 1_073_741_824)),
+                                 at: base.addingTimeInterval(hour * 3600))
+        }
+    }
 
     @Test func liveDiskRead() {
         let disk = DiskSpace.read()
@@ -56,13 +64,60 @@ import CSQLite
     @Test func diskRateAndDaysUntilFull() throws {
         let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
         let store = try HistoryStore(directory: dir, now: base)
-        // Free space drops 2 GB/hour across three hours: 48 GB/day, ~0.2 days left at 10 GB.
-        for i in 0...3 {
-            _ = try store.record(memory: memory(), apps: [], disk: disk(free: UInt64(16 << 30) - UInt64(i) * (2 << 30)), at: base.addingTimeInterval(Double(i) * 3600))
-        }
-        let summary = try store.summary(now: base.addingTimeInterval(3 * 3600))
-        #expect(abs((summary.diskRateGBPerDay ?? 0) - 48) < 2)
-        #expect(abs((summary.daysUntilFull ?? 0) - 10.0 / 48.0) < 0.1)
+        // Free space drops 2 GB/hour across eight hours: 48 GB/day, ~0.2 days left at 10 GB.
+        try record(store, hours: 0...8) { 26 - 2 * $0 }
+        let summary = try store.summary(now: base.addingTimeInterval(8 * 3600))
+        #expect(abs((summary.diskRateGBPerDay ?? 0) - 48) < 0.5)
+        #expect(abs((summary.daysUntilFull ?? 0) - 10.0 / 48.0) < 0.01)
+        #expect(summary.recommendations.contains { $0.title == "Disk is filling quickly" })
+    }
+    /// A 10 GB download in the first hour of history used to read as about
+    /// 240 GB/day. No rate is reported until readings span six hours.
+    @Test func diskRateWaitsForSixHoursOfReadings() throws {
+        let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try HistoryStore(directory: dir, now: base)
+        try record(store, hours: 0...1) { 100 - 10 * $0 }
+        var summary = try store.summary(now: base.addingTimeInterval(3600))
+        #expect(summary.diskRateGBPerDay == nil)
+        #expect(summary.daysUntilFull == nil)
+        #expect(!summary.recommendations.contains { $0.title == "Disk is filling quickly" })
+        // Flat afterwards, up to just short of six hours: still nothing.
+        try record(store, hours: 1.5...5.5) { _ in 90 }
+        summary = try store.summary(now: base.addingTimeInterval(5.5 * 3600))
+        #expect(summary.diskRateGBPerDay == nil)
+        #expect(summary.daysUntilFull == nil)
+        // At six hours a rate appears.
+        try record(store, hours: 6...6) { _ in 90 }
+        summary = try store.summary(now: base.addingTimeInterval(6 * 3600))
+        #expect(summary.diskRateGBPerDay != nil)
+    }
+    /// The same download followed by a quiet day: the two-endpoint rate stays at
+    /// the full 10 GB/day until the hour leaves the window, while the fitted line
+    /// sees a day of flat readings.
+    @Test func diskRateFitsEveryReadingNotJustTheEndpoints() throws {
+        let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try HistoryStore(directory: dir, now: base)
+        try record(store, hours: 0...1) { 100 - 10 * $0 }
+        try record(store, hours: 1.5...23.5) { _ in 90 }
+        let summary = try store.summary(now: base.addingTimeInterval(23.5 * 3600))
+        let rate = try #require(summary.diskRateGBPerDay)
+        #expect(rate > 0 && rate < 3)
+        #expect(!summary.recommendations.contains { $0.title == "Disk is filling quickly" })
+    }
+    @Test func diskRateIsNegativeWhenSpaceIsFreed() throws {
+        let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try HistoryStore(directory: dir, now: base)
+        try record(store, hours: 0...7) { 50 + $0 }
+        var summary = try store.summary(now: base.addingTimeInterval(7 * 3600))
+        #expect(abs((summary.diskRateGBPerDay ?? 0) + 24) < 0.5)
+        #expect(summary.daysUntilFull == nil)
+        // Unchanged readings are a rate of exactly zero, not a tiny slope.
+        let flatDir = directory(); defer { try? FileManager.default.removeItem(at: flatDir) }
+        let flat = try HistoryStore(directory: flatDir, now: base)
+        try record(flat, hours: 0...7) { _ in 50 }
+        summary = try flat.summary(now: base.addingTimeInterval(7 * 3600))
+        #expect(summary.diskRateGBPerDay == 0)
+        #expect(summary.daysUntilFull == nil)
     }
     @Test func consumerRoundTripKeepsPreviousScan() throws {
         let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
