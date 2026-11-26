@@ -1,11 +1,12 @@
-import XCTest
+import Foundation
+import Testing
 @testable import HeadroomCore
 
-final class MemoryTests: XCTestCase {
+@Suite struct MemoryTests {
     func app(_ pid: Int32, _ path: String, name: String = "App") -> AppIdentity {
         .init(pid: pid, name: name, bundlePath: path, bundleIdentifier: nil, launchDate: nil)
     }
-    func testGroupsDescendantsAndReparentedHelpersWithoutDoubleCounting() {
+    @Test func groupsDescendantsAndReparentedHelpersWithoutDoubleCounting() {
         let apps = [app(10, "/Applications/Browser.app"), app(20, "/Applications/Editor.app")]
         let processes = [
             ProcessMemory(pid: 10, parent: 1, path: "/Applications/Browser.app/Contents/MacOS/browser", footprint: 100),
@@ -16,10 +17,10 @@ final class MemoryTests: XCTestCase {
             ProcessMemory(pid: 30, parent: 1, path: "/Applications/Browser.app.fake/worker", footprint: 999)
         ]
         let result = AppGrouping.group(apps: apps, processes: processes)
-        XCTAssertEqual(result.map(\.bytes), [600, 75])
-        XCTAssertEqual(result.map(\.processCount), [3, 2])
+        #expect(result.map(\.bytes) == [600, 75])
+        #expect(result.map(\.processCount) == [3, 2])
     }
-    func testUnreadableProcessesAndParentCycles() {
+    @Test func unreadableProcessesAndParentCycles() {
         let result = AppGrouping.group(apps: [app(10, "/A.app"), app(20, "/B.app")], processes: [
             .init(pid: 10, parent: 1, path: "/A.app/main", footprint: 10),
             .init(pid: 11, parent: 10, path: "/worker", footprint: nil),
@@ -27,37 +28,36 @@ final class MemoryTests: XCTestCase {
             .init(pid: 30, parent: 31, path: "/worker", footprint: 1000),
             .init(pid: 31, parent: 30, path: "/worker", footprint: 1000)
         ])
-        XCTAssertEqual(result[0].bytes, 10)
-        XCTAssertEqual(result[0].unreadableCount, 1)
-        XCTAssertNil(result[1].bytes)
+        #expect(result[0].bytes == 10)
+        #expect(result[0].unreadableCount == 1)
+        #expect(result[1].bytes == nil)
     }
-    func testLongestBundlePathOwnsReparentedNestedHelper() {
+    @Test func longestBundlePathOwnsReparentedNestedHelper() {
         let result = AppGrouping.group(apps: [app(10, "/A.app"), app(20, "/A.app/Nested.app")], processes: [
             .init(pid: 21, parent: 1, path: "/A.app/Nested.app/helper", footprint: 50)
         ])
-        XCTAssertEqual(result.first?.id, 20)
-        XCTAssertEqual(result.first?.bytes, 50)
+        #expect(result.first?.id == 20)
+        #expect(result.first?.bytes == 50)
     }
-    func testKernelPressureIsNotDerivedFromUsagePercent() {
-        XCTAssertEqual(Pressure.fromKernel(1), .normal)
-        XCTAssertEqual(Pressure.fromKernel(2), .warning)
-        XCTAssertEqual(Pressure.fromKernel(4), .critical)
-        XCTAssertEqual(Pressure.fromKernel(6), .critical)
-        XCTAssertEqual(Pressure.fromKernel(0), .unknown)
+    @Test func kernelPressureIsNotDerivedFromUsagePercent() {
+        #expect(Pressure.fromKernel(1) == .normal)
+        #expect(Pressure.fromKernel(2) == .warning)
+        #expect(Pressure.fromKernel(4) == .critical)
+        #expect(Pressure.fromKernel(6) == .critical)
+        #expect(Pressure.fromKernel(0) == .unknown)
     }
-    func testPlacementFallsBackWithoutNotch() {
-        for placement in Placement.allCases { XCTAssertFalse(placement.usesNotch(available: false)) }
-        XCTAssertTrue(Placement.automatic.usesNotch(available: true))
-        XCTAssertTrue(Placement.notch.usesNotch(available: true))
-        XCTAssertFalse(Placement.menuBar.usesNotch(available: true))
+    @Test func placementFallsBackWithoutNotch() {
+        for placement in Placement.allCases { #expect(!placement.usesNotch(available: false)) }
+        #expect(Placement.automatic.usesNotch(available: true))
+        #expect(Placement.notch.usesNotch(available: true))
+        #expect(!Placement.menuBar.usesNotch(available: true))
     }
-    func testLiveKernelReadAndOwnFootprint() {
+    @Test func liveKernelReadAndOwnFootprint() throws {
         let memory = SystemMemory.read()
-        XCTAssertTrue(memory.valid)
-        XCTAssertGreaterThan(memory.total, 0)
-        XCTAssertLessThanOrEqual(memory.used, memory.total)
-        let own = ProcessMemory.read().first { $0.pid == ProcessInfo.processInfo.processIdentifier }
-        XCTAssertNotNil(own)
-        XCTAssertGreaterThan(own?.footprint ?? 0, 0)
+        #expect(memory.valid)
+        #expect(memory.total > 0)
+        #expect(memory.used <= memory.total)
+        let own = try #require(ProcessMemory.read().first { $0.pid == ProcessInfo.processInfo.processIdentifier })
+        #expect((own.footprint ?? 0) > 0)
     }
 }
