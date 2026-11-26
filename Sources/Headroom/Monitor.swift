@@ -173,11 +173,6 @@ final class MemoryMonitor: ObservableObject {
             loading = false
             return
         }
-        // Keep the placement preference from the original local prototype.
-        if UserDefaults.standard.string(forKey: "placement") == nil,
-           let old = UserDefaults.standard.persistentDomain(forName: "org.memoryline.app")?["placement"] as? String {
-            UserDefaults.standard.set(old, forKey: "placement")
-        }
         placement = Placement(rawValue: UserDefaults.standard.string(forKey: "placement") ?? "") ?? .automatic
         historyEnabled = UserDefaults.standard.object(forKey: "historyEnabled") as? Bool ?? true
         agentsVisible = PanelWidgets.shared.isVisible(.agents)

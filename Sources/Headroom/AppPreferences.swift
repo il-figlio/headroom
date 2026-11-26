@@ -25,8 +25,6 @@ final class AppPreferences: ObservableObject {
         let defaults = UserDefaults.standard
         let state = Onboarding.migrate(defaults) {
             Onboarding.isExistingInstall(store: defaults, supportDirectory: HistoryStore.defaultDirectory)
-                // The original local prototype's domain.
-                || defaults.persistentDomain(forName: "org.memoryline.app") != nil
         }
         limitsEnabled = state.limitsEnabled
         claudeKeychainEnabled = defaults.object(forKey: QuotaSettings.claudeKeychainKey) as? Bool ?? true
