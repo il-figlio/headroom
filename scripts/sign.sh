@@ -3,16 +3,19 @@
 # Ad-hoc signatures change every build, so Keychain can never match a
 # rebuilt binary to a previous "Always Allow" consent — every rebuild and
 # every keychain read re-prompts. A persistent certificate makes consent
-# stick across rebuilds. The cert lives in a dedicated keychain under the
-# app's own support dir so no login-keychain password is ever needed.
+# stick across rebuilds. The cert lives in a dedicated keychain file under
+# ~/Library/Application Support/Headroom/signing, so no login-keychain
+# password is ever needed. That keychain is never added to the keychain
+# search list: codesign is pointed at the file with --keychain, and the
+# script neither reads nor changes the search list or the login keychain.
 set -eu
 
 #
 # HEADROOM_SIGN_IDENTITY selects another path:
-#   -                                   ad-hoc, for CI builds and release dry runs
+#   -                                   ad-hoc, for verify.sh and release dry runs
 #   Developer ID Application: … (TEAM)  hardened runtime + secure timestamps
 # HEADROOM_SIGN_KEYCHAIN optionally names the keychain holding that identity
-# (CI imports the certificate into a throwaway keychain).
+# (when it isn't in a keychain on the search list).
 # Sparkle's nested code is signed inside-out, then the host app; it must use
 # the same team as the app for library validation.
 if [[ -n "${HEADROOM_SIGN_IDENTITY:-}" ]]; then
@@ -41,11 +44,22 @@ KC="$SIGNING_DIR/headroom-signing.keychain-db"
 PW_FILE="$SIGNING_DIR/password"
 APP="$1"
 
+# The keychain is unlocked only while this script runs. Lock it again on every
+# exit path: success, a command failing under `set -e`, or a signal (zsh runs
+# the EXIT trap for a signal only when the signal's own trap calls exit).
+lock_keychain() {
+    [[ -f "$KC" ]] || return 0
+    security lock-keychain "$KC" 2>/dev/null || true
+}
+trap lock_keychain EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # A locked keychain reports no usable identities. Unlock an existing store
 # before checking it so rebuilds keep the certificate and its keychain consent.
 if [[ -f "$KC" && -f "$PW_FILE" ]]; then
-    PW=$(cat "$PW_FILE")
-    security unlock-keychain -p "$PW" "$KC"
+    security unlock-keychain -p "$(<"$PW_FILE")" "$KC"
 fi
 
 # Self-signed local identities aren't system-trusted, so `-v` would omit
@@ -76,14 +90,14 @@ CNF
     security import "$SIGNING_DIR/key.pem" -k "$KC" -P '' -T /usr/bin/codesign
     security set-key-partition-list -S apple-tool:,apple: -s -k "$PW" "$KC" >/dev/null
     rm -f "$SIGNING_DIR/key.pem" "$SIGNING_DIR/cert.pem" "$SIGNING_DIR/cert.cnf"
-    security lock-keychain "$KC" 2>/dev/null || true
 fi
 
-PW=$(cat "$PW_FILE")
-security unlock-keychain -p "$PW" "$KC"
-# Put our keychain first on the user search list while signing, then restore.
-ORIGINAL=$(security list-keychains -d user | tr -d '"' | tr -d ' ')
-security list-keychains -d user -s "$KC" $ORIGINAL
-codesign --force --sign "$IDENTITY" --timestamp=none "$APP"
-security list-keychains -d user -s $ORIGINAL
-security lock-keychain "$KC" 2>/dev/null || true
+# Sign straight from the keychain file. With --keychain, codesign looks for the
+# identity only in that file, so it doesn't have to be on the user's keychain
+# search list. (codesign(1): the search list is consulted only to build the
+# certificate chain, and a self-signed certificate is its whole chain.)
+if ! codesign --force --sign "$IDENTITY" --keychain "$KC" --timestamp=none "$APP"; then
+    print -u2 "sign.sh: codesign could not sign with \"$IDENTITY\" from $KC."
+    print -u2 "         For a build that needs no keychain: HEADROOM_SIGN_IDENTITY=- ./scripts/build.sh"
+    exit 1
+fi

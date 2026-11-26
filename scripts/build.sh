@@ -3,7 +3,7 @@
 # Version and app values come from VERSION and packaging/app.env; Info.plist is
 # rendered from Resources/Info.plist.in. Signing is delegated to scripts/sign.sh:
 #   (default)                          persistent "Headroom Local" identity
-#   HEADROOM_SIGN_IDENTITY=-           ad-hoc (CI builds, local release dry runs)
+#   HEADROOM_SIGN_IDENTITY=-           ad-hoc (verify.sh, release dry runs); touches no keychain
 #   HEADROOM_SIGN_IDENTITY='Developer ID Application: …'  hardened runtime + timestamp
 set -eu
 cd "${0:A:h:h}"
