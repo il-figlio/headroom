@@ -72,9 +72,11 @@ struct AgentsCard: View {
         guard summary.measured > 0 else { return nil }
         return (summary.measured < summary.processes ? "≥ " : "") + MemoryFormat.compact(summary.footprint)
     }
+    /// With no process list, an empty `running` means "can't tell", not idle.
     private var summary: String {
         let processes = agents.runningSummary.processes
-        return [running.isEmpty ? "Idle" : "\(max(processes, 1)) running", footprintText, costToday].compactMap { $0 }.joined(separator: " · ")
+        let state = !running.isEmpty ? "\(max(processes, 1)) running" : agents.processListAvailable ? "Idle" : "Processes unknown"
+        return [state, footprintText, costToday].compactMap { $0 }.joined(separator: " · ")
     }
 
     var body: some View {
@@ -154,7 +156,8 @@ struct AgentsCard: View {
     }
 
     private func idleLine(now: Date) -> String {
-        var parts = ["Nothing running", "\(TokenFormat.compact(agents.todayTokens.total)) tokens"]
+        var parts = [agents.processListAvailable ? "Nothing running" : "Can't read the process list",
+                     "\(TokenFormat.compact(agents.todayTokens.total)) tokens"]
         if let cost = agents.todayCostUSD { parts.append("~" + TokenFormat.usd(cost) + " today") }
         if let lastActivity { parts.append("last active " + AgentTime.ago(lastActivity, now: now)) }
         return parts.joined(separator: " · ")
@@ -169,6 +172,7 @@ struct AgentsCard: View {
         }
         if agents.unpricedTokensToday > 0 { lines.append("+\(TokenFormat.compact(agents.unpricedTokensToday)) unpriced tokens") }
         if let footprintText { lines.append("\(footprintText) live memory across running sessions' process trees") }
+        if !agents.processListAvailable { lines.append("The process list couldn't be read, so running sessions and their memory are unknown.") }
         return lines
     }
 }

@@ -49,7 +49,8 @@ struct AgentsSection: View {
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 HStack(spacing: 24) {
-                    stat("Active now", "\(agents.live.count)")
+                    // No process list and nothing writing: unknown, not zero.
+                    stat("Active now", agents.processListAvailable || !agents.live.isEmpty ? "\(agents.live.count)" : "—")
                     stat("Sessions today", "\(sessionsToday)")
                     stat("Tokens today", TokenFormat.compact(agents.todayTokens.total))
                     stat("Est. cost", agents.todayCostUSD.map { "~" + TokenFormat.usd($0) } ?? "—")
@@ -57,6 +58,10 @@ struct AgentsSection: View {
                     .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.04)))
                 if agents.unpricedTokensToday > 0 {
                     Text("+\(TokenFormat.compact(agents.unpricedTokensToday)) unpriced tokens today — the estimate only covers models with known prices.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if !agents.processListAvailable {
+                    Text("The process list couldn't be read, so which sessions are running, and their memory, is unknown.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 ScrollView(.horizontal, showsIndicators: false) {

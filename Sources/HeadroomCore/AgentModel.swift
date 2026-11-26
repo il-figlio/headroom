@@ -145,8 +145,13 @@ public struct AgentSnapshot: Sendable {
     public var unpricedTokensToday: Int64 = 0
     public var scannedAt: Date?
     /// Agent processes `ps` showed per kind at scan time. Empty when unknown
-    /// (fixtures, previews); `runningSummary` then can't bound pid-less rows.
+    /// (fixtures, previews, an unreadable process list); `runningSummary`
+    /// then can't bound pid-less rows.
     public var processCounts: [AgentKind: Int] = [:]
+    /// False when the scan couldn't read the process list. Sessions then
+    /// carry no pid and no footprint, health comes from transcript activity
+    /// alone, and "nothing running" isn't a claim the snapshot can make.
+    public var processListAvailable = true
     public init() {}
     public var live: [AgentSession] { sessions.filter { $0.health == .live || $0.health == .stuck } }
     /// Running agent processes and their summed footprint, counted per

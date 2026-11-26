@@ -63,15 +63,22 @@ public final class AgentScanner {
     private let providers: [AgentProvider]
     private let fallback: AgentProvider
     private let candidates0: [(kind: AgentKind, path: String)]
+    /// Reads the process list for scans that aren't handed one; nil means it
+    /// couldn't be read.
+    private let processList: () -> [AgentProcess]?
     let discovery = TranscriptDiscovery()
     /// `sessionFiles()` of providers that declare no trees, by provider index.
     private var listedClaims: [[String]]?
 
+    /// `processList` replaces the live `ps` read (tests); it returns nil when
+    /// the list is unavailable.
     public init(providers: [AgentProvider] = AgentProviders.all,
-                roots: [(kind: AgentKind, path: String)]? = nil) {
+                roots: [(kind: AgentKind, path: String)]? = nil,
+                processList: (() -> [AgentProcess]?)? = nil) {
         self.providers = providers
         self.fallback = providers.last(where: { $0 is GenericProvider }) ?? GenericProvider()
         self.candidates0 = roots ?? Self.rootCandidates()
+        self.processList = processList ?? { AgentScanner.liveProcesses() }
     }
 
     /// Every installation root Headroom knows how to watch, whether it exists
@@ -275,8 +282,11 @@ public final class AgentScanner {
             // not sessions.
             !($0.kind == .other && $0.tokens.total == 0 && $0.models.isEmpty && $0.tools.isEmpty)
         }
-        let live = processes ?? Self.liveProcesses()
-        let livePids = Set(live.map(\.pid))
+        // nil: the process list couldn't be read, which is not the same as
+        // no agent running.
+        let listing = processes ?? processList()
+        let live = listing ?? []
+        let livePids = listing.map { Set($0.map(\.pid)) }
         let names = Self.processNames
         var pidsByKind: [AgentKind: [AgentProcess]] = [:]
         for proc in live {
@@ -298,6 +308,7 @@ public final class AgentScanner {
         snapshot.roots = roots
         snapshot.scannedAt = now
         snapshot.processCounts = pidsByKind.mapValues(\.count)
+        snapshot.processListAvailable = listing != nil
         for session in all where Calendar.current.isDateInToday(session.lastEventAt ?? .distantPast) {
             snapshot.todayTokens += session.tokens
             if let cost = session.costUSD { snapshot.todayCostUSD = (snapshot.todayCostUSD ?? 0) + cost }
@@ -367,20 +378,34 @@ public final class AgentScanner {
         session.costUSD = cost
     }
 
-    /// `ps -eo pid=,args=` — cheap, no shell needed beyond the binary itself.
-    public static func liveProcesses() -> [AgentProcess] {
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ps")
-        process.arguments = ["-eo", "pid=,args="]
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch { return [] }
-        let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        return text.split(separator: "\n").compactMap { line in
+    /// macOS keeps `ps` in /bin; there is no /usr/bin/ps.
+    static let psURL = URL(fileURLWithPath: "/bin/ps")
+    /// A few seconds is ample for `ps`, and the scan runs on the monitor's
+    /// sampling queue, which must not wait long. Every process's full
+    /// argument string comes to a few hundred KB (single lines run past
+    /// 10 KB), so the cap sits well above that.
+    static let psLimits = BoundedProcess.Limits(timeout: 5, killGrace: 1, outputLimit: 8 << 20)
+
+    /// Every process as `ps -eo pid=,args=` lists it, or nil when the list
+    /// is unavailable: `ps` didn't launch, ran out of time, failed, wrote
+    /// more than the cap, or listed nothing (it always lists itself). Nil is
+    /// not "no agents": callers must not read it as nothing running.
+    public static func liveProcesses() -> [AgentProcess]? {
+        liveProcesses(executable: psURL, limits: psLimits)
+    }
+
+    /// Goes through `BoundedProcess` because the output is larger than a
+    /// pipe holds: waiting for `ps` to exit before reading would block both
+    /// sides forever.
+    static func liveProcesses(executable: URL, limits: BoundedProcess.Limits) -> [AgentProcess]? {
+        guard case let .exited(status, output) = BoundedProcess.run(executable, arguments: ["-eo", "pid=,args="], limits: limits),
+              status == 0 else { return nil }
+        let listed = parseProcessList(output)
+        return listed.isEmpty ? nil : listed
+    }
+
+    static func parseProcessList(_ output: Data) -> [AgentProcess] {
+        String(decoding: output, as: UTF8.self).split(separator: "\n").compactMap { line in
             let fields = line.drop(while: { $0 == " " }).split(separator: " ", maxSplits: 1)
             guard fields.count == 2, let pid = Int32(fields[0]) else { return nil }
             return AgentProcess(pid: pid, args: String(fields[1]))
@@ -394,8 +419,17 @@ public final class AgentScanner {
         .cursor: ["cursor"], .windsurf: ["windsurf"],
     ]
 
-    private func health(of session: AgentSession, kindAlive: Bool, grew: Bool, now: Date, livePids: Set<Int32>) -> SessionHealth {
+    /// `livePids` is nil when the process list couldn't be read. Then only
+    /// the transcript speaks: a session is live while its last event is
+    /// recent and it either grew in this scan or was live at the last one
+    /// (so it doesn't flicker between writes), and ended otherwise. Zombie
+    /// and stuck both assert something about processes, so neither is used.
+    /// `session.health` still holds the previous scan's value here.
+    private func health(of session: AgentSession, kindAlive: Bool, grew: Bool, now: Date, livePids: Set<Int32>?) -> SessionHealth {
         let fresh = (session.lastEventAt ?? .distantPast).timeIntervalSince(now) > -Self.staleAfter
+        guard let livePids else {
+            return fresh && (grew || session.health == .live) ? .live : .ended
+        }
         if let pid = session.pid, livePids.contains(pid) {
             return fresh ? .live : .stuck
         }
