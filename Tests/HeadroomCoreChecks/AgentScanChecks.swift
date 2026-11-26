@@ -3,8 +3,9 @@ import Testing
 @testable import HeadroomCore
 
 /// Offset/rotation/persistence checks for AgentScanner against synthetic
-/// generic transcripts in throwaway temp directories.
-private let now = Date(timeIntervalSince1970: 1_800_000_000)
+/// generic transcripts in throwaway temp directories. `now` sits just after
+/// the fixtures' 2026-11-24 stamps: sessions quiet for 30 days are dropped.
+private let now = Date(timeIntervalSince1970: 1_795_521_600) // 2026-11-24T12:00:00Z
 /// 7 + 3 tokens per line.
 private let usageLine = Data((#"{"type":"assistant","timestamp":"2026-11-24T10:00:00Z","model":"m","usage":{"input_tokens":7,"output_tokens":3}}"# + "\n").utf8)
 
@@ -133,6 +134,13 @@ private func datedUsageLine(_ stamp: String) -> Data {
     Data((#"{"type":"assistant","timestamp":""# + stamp + #"","model":"m","usage":{"input_tokens":7,"output_tokens":3}}"# + "\n").utf8)
 }
 
+/// A usage line stamped an hour ago by the real clock, for checks that read
+/// usage back from a store: the store deletes agent_usage rows older than 30
+/// days by the real clock on every write, so a fixed stamp would expire.
+private func recentUsageLine() -> Data {
+    datedUsageLine(ISO8601DateFormatter().string(from: Date().addingTimeInterval(-3600)))
+}
+
 @Test func agentScanRereadsRotatedFile() throws {
     let root = try tempDirectory(); defer { try? FileManager.default.removeItem(at: root) }
     let file = root.appendingPathComponent("f.jsonl")
@@ -185,10 +193,10 @@ private func datedUsageLine(_ stamp: String) -> Data {
     let file = root.appendingPathComponent("x.jsonl")
     try usageLine.write(to: file)
     let scan = AgentScanner(providers: [GenericProvider()], roots: [(.other, root.path)])
-    let first = scan.scan(processes: [])
+    let first = scan.scan(now: now, processes: [])
     let undated = Data((#"{"type":"assistant","model":"m","usage":{"input_tokens":50,"output_tokens":50}}"# + "\n").utf8)
     try (usageLine + undated + datedUsageLine("2026-11-24T10:00:01Z")).write(to: file, options: .atomic)
-    let second = scan.scan(previousSessions: first.sessions, offsets: first.offsets, identities: first.identities, processes: [])
+    let second = scan.scan(now: now, previousSessions: first.sessions, offsets: first.offsets, identities: first.identities, processes: [])
     #expect(tokens(first.usage) + tokens(second.usage) == 20)
     #expect(second.sessions.first?.tokens.total == 20)
     #expect(second.sessions.first?.lastEventAt == ISO8601DateFormatter().date(from: "2026-11-24T10:00:01Z"))
@@ -279,9 +287,10 @@ private func datedUsageLine(_ stamp: String) -> Data {
     let root = try tempDirectory(); defer { try? FileManager.default.removeItem(at: root) }
     let history = try tempDirectory(); defer { try? FileManager.default.removeItem(at: history) }
     let file = root.appendingPathComponent("d.jsonl")
-    try usageLine.write(to: file)
+    try recentUsageLine().write(to: file)
     let store = try HistoryStore(directory: history)
     let scan = scanner(root)
+    let now = Date()
     let first = scan.scan(now: now, processes: [])
     let low = DiskSpace(total: 500_000_000_000, free: 100_000_000, purgeable: 0, valid: true)
     #expect(throws: (any Error).self) {
@@ -325,7 +334,7 @@ private func datedUsageLine(_ stamp: String) -> Data {
     let file = root.appendingPathComponent("race.jsonl")
     FileManager.default.createFile(atPath: file.path, contents: nil)
     // Short enough that the whole run stays under the 2 MB tail cap.
-    let line = Data((#"{"type":"a","ts":1,"usage":{"input":7,"output":3}}"# + "\n").utf8)
+    let line = Data((#"{"type":"a","ts":1795514400,"usage":{"input":7,"output":3}}"# + "\n").utf8)
     let lines = 20_000
     let scan = scanner(root)
     var chain = Chain()
@@ -351,9 +360,11 @@ private func datedUsageLine(_ stamp: String) -> Data {
     let root = try tempDirectory(); defer { try? FileManager.default.removeItem(at: root) }
     let history = try tempDirectory(); defer { try? FileManager.default.removeItem(at: history) }
     let file = root.appendingPathComponent("s.jsonl")
+    let usageLine = recentUsageLine()
     try usageLine.write(to: file)
     let store = try HistoryStore(directory: history)
     let scan = scanner(root)
+    let now = Date()
     let first = scan.scan(now: now, processes: [])
     try store.commitAgentScan(sessions: first.sessions, offsets: first.offsets, identities: first.identities, usage: first.usage)
 

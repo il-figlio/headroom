@@ -56,6 +56,9 @@ public final class AgentScanner {
     /// so accumulation survives churn at the boundary.
     public static let sessionLimit = 40
     public static let persistLimit = 200
+    /// A session whose last event is older than this is no longer listed or
+    /// saved, whether or not its transcript still exists.
+    public static let sessionRetention: TimeInterval = 30 * 86400
     static let maxTailRead = 2 * 1024 * 1024
     static let staleAfter: TimeInterval = 600
     static let candidateLimit = 60
@@ -210,7 +213,12 @@ public final class AgentScanner {
             var start = newOffsets[path] ?? 0
             let restarted = rotated || start > size
             if restarted { start = 0 }
-            guard size > start || sessions[path] == nil else {
+            // Nothing new to read. A file with no session is still read once
+            // to create it, but not when it already has an offset: its
+            // session was dropped (retention, the persist limit, index
+            // noise), and making an empty one on every scan would list a
+            // session that never said anything.
+            guard size > start || (sessions[path] == nil && newOffsets[path] == nil) else {
                 newOffsets[path] = start
                 newIdentities[path] = id
                 continue
@@ -289,6 +297,15 @@ public final class AgentScanner {
             // not sessions.
             !($0.kind == .other && $0.tokens.total == 0 && $0.models.isEmpty && $0.tools.isEmpty)
         }
+        // Retention: a session quiet for 30 days is dropped here, so it
+        // leaves the snapshot and the saved list together. One with no date
+        // at all (a row from an old build that was never re-read) can't be
+        // shown to be recent and goes too. The offset of a transcript that
+        // still exists is kept below, so the file isn't read and counted
+        // again; if it is ever appended to, a new session starts from the
+        // new lines.
+        let oldest = now.addingTimeInterval(-Self.sessionRetention)
+        all.removeAll { ($0.lastEventAt ?? .distantPast) < oldest }
         // nil: the process list couldn't be read, which is not the same as
         // no agent running.
         let listing = processes ?? processList()
@@ -320,9 +337,12 @@ public final class AgentScanner {
         // lifetime totals of sessions that happened to be active today.
         let usage = burn.values.sorted { $0.hour < $1.hour }
         snapshot.setToday(from: previousBurn + usage, now: now, calendar: calendar)
-        // Drop state for files that no longer exist so the dicts stay bounded.
+        // Keep state only for transcripts that still exist or still have a
+        // saved session, so the dicts stay bounded and a dropped session's
+        // path goes with it once its file is gone.
         let alive = Set(candidates.map(\.file.path))
-        newOffsets = newOffsets.filter { alive.contains($0.key) || known.contains($0.key) }
+        let kept = Set(persisted.map(\.filePath))
+        newOffsets = newOffsets.filter { alive.contains($0.key) || kept.contains($0.key) }
         newIdentities = newIdentities.filter { newOffsets[$0.key] != nil }
         return AgentScanResult(snapshot: snapshot, sessions: persisted, offsets: newOffsets,
                                identities: newIdentities, usage: usage)

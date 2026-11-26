@@ -2,9 +2,10 @@ import Foundation
 import Testing
 @testable import HeadroomCore
 
-/// What counts as a token, a dollar and "today": Codex and Claude Code usage
-/// shapes, duplicate responses, the price table and day totals from hourly
-/// burn. Synthetic transcripts in throwaway temp directories only.
+/// What counts as a token, a dollar, "today" and a session worth keeping:
+/// Codex and Claude Code usage shapes, duplicate responses, the price table,
+/// day totals from hourly burn, and session retention. Synthetic transcripts
+/// in throwaway temp directories only.
 @Suite struct AgentAccountingChecks {
     let now = Date(timeIntervalSince1970: 1_795_521_600) // 2026-11-24T12:00:00Z
     var utc: Calendar {
@@ -408,5 +409,70 @@ import Testing
         #expect(snapshot.todayTokens == 0)
         #expect(snapshot.todayCostUSD == nil)
         #expect(snapshot.unpricedTokensToday == 0)
+    }
+
+    // MARK: Retention
+
+    func genericLine(at date: Date) -> Data {
+        Data((#"{"type":"assistant","timestamp":"\#(stamp(date))","model":"m","usage":{"input_tokens":7,"output_tokens":3}}"# + "\n").utf8)
+    }
+
+    /// A transcript quiet for more than 30 days is not listed or saved, and
+    /// — while it still exists — is not read and counted again on every scan.
+    @Test func sessionQuietForThirtyDaysIsDroppedWithoutBeingRecounted() throws {
+        let root = try tempDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let old = root.appendingPathComponent("old.jsonl")
+        let recent = root.appendingPathComponent("recent.jsonl")
+        try genericLine(at: now.addingTimeInterval(-31 * 86400)).write(to: old)
+        try genericLine(at: now.addingTimeInterval(-29 * 86400)).write(to: recent)
+        let scanner = AgentScanner(providers: [GenericProvider()], roots: [(.other, root.path)])
+        var chain = Chain()
+        let first = chain.scan(scanner, now: now)
+        #expect(chain.sessions.map(\.filePath) == [recent.path])
+        #expect(first.snapshot.sessions.map(\.filePath) == [recent.path])
+        // Its offset stays, so the file is known to be read already.
+        #expect(chain.offsets[old.path] == Int64(try Data(contentsOf: old).count))
+        #expect(chain.burn == 20)
+
+        for _ in 0..<3 {
+            let again = chain.scan(scanner, now: now)
+            #expect(again.usage.isEmpty)
+            #expect(chain.sessions.map(\.filePath) == [recent.path])
+        }
+        #expect(chain.burn == 20)
+
+        // Picked up again after all that time: a new session from the new
+        // lines only.
+        try append(old, genericLine(at: now.addingTimeInterval(-60)))
+        chain.scan(scanner, now: now)
+        #expect(chain.burn == 30)
+        #expect(chain.sessions.first { $0.filePath == old.path }?.tokens.total == 10)
+
+        // A day later the 29-day-old session has aged out too.
+        chain.scan(scanner, now: now.addingTimeInterval(2 * 86400))
+        #expect(chain.sessions.map(\.filePath) == [old.path])
+        #expect(chain.burn == 30)
+    }
+
+    /// Once the transcript is gone, an expired session takes its path, offset
+    /// and file identity with it; a recent one stays listed.
+    @Test func expiredSessionWithoutAFileLeavesNoState() throws {
+        let root = try tempDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        func saved(_ name: String, daysAgo: Double?) -> AgentSession {
+            var session = AgentSession(kind: .claude, sessionId: name, projectDir: "/Users/me/\(name)", filePath: root.appendingPathComponent("\(name).jsonl").path)
+            session.lastEventAt = daysAgo.map { now.addingTimeInterval(-$0 * 86400) }
+            session.tokens.input = 10
+            return session
+        }
+        let sessions = [saved("gone-old", daysAgo: 45), saved("gone-recent", daysAgo: 3), saved("gone-undated", daysAgo: nil)]
+        let offsets = Dictionary(uniqueKeysWithValues: sessions.map { ($0.filePath, Int64(100)) })
+        let identities = Dictionary(uniqueKeysWithValues: sessions.map { ($0.filePath, AgentFileID(device: 1, inode: 2)) })
+        let scanner = AgentScanner(providers: [GenericProvider()], roots: [(.other, root.path)])
+        let result = scanner.scan(now: now, previousSessions: sessions, offsets: offsets, identities: identities, processes: [])
+        let kept = root.appendingPathComponent("gone-recent.jsonl").path
+        #expect(result.sessions.map(\.filePath) == [kept])
+        #expect(result.snapshot.sessions.map(\.filePath) == [kept])
+        #expect(Array(result.offsets.keys) == [kept])
+        #expect(Array(result.identities.keys) == [kept])
     }
 }

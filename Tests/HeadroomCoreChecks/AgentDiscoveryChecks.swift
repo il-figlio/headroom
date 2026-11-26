@@ -2,6 +2,11 @@ import Foundation
 import Testing
 @testable import HeadroomCore
 
+/// Scans are pinned to a time just after the fixtures' 2026-11-24 stamps:
+/// sessions quiet for 30 days are dropped, so the real clock would turn these
+/// checks stale.
+private let now = Date(timeIntervalSince1970: 1_795_521_600) // 2026-11-24T12:00:00Z
+
 private let line = Data((#"{"type":"assistant","timestamp":"2026-11-24T10:00:00Z","usage":{"input_tokens":7,"output_tokens":3}}"# + "\n").utf8)
 
 private func tempDirectory() throws -> URL {
@@ -52,12 +57,12 @@ private func backdate(_ url: URL, by seconds: TimeInterval) throws {
     try backdate(root, by: 600)
 
     let scanner = AgentScanner(providers: [GenericProvider()], roots: [(.other, root.path)])
-    var result = scanner.scan(processes: [])
+    var result = scanner.scan(now: now, processes: [])
     #expect(result.sessions.count == AgentScanner.candidateLimit)
     let listed = scanner.discovery.listings
     #expect(listed == 2)
     func rescan() {
-        result = scanner.scan(previousSessions: result.sessions, offsets: result.offsets,
+        result = scanner.scan(now: now, previousSessions: result.sessions, offsets: result.offsets,
                               identities: result.identities, processes: [])
     }
 

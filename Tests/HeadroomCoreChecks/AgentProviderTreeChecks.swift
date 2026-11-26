@@ -2,6 +2,11 @@ import Foundation
 import Testing
 @testable import HeadroomCore
 
+/// Scans are pinned to a time just after the fixtures' 2026-11-24 stamps:
+/// sessions quiet for 30 days are dropped, so the real clock would turn these
+/// checks stale.
+private let now = Date(timeIntervalSince1970: 1_795_521_600) // 2026-11-24T12:00:00Z
+
 /// Provider-declared trees against a synthetic home — never the real
 /// ~/.codex or ~/.claude.
 private func tempHome() throws -> URL {
@@ -41,7 +46,7 @@ private func codexScanner(_ codex: URL) -> AgentScanner {
               to: codex.appendingPathComponent("log/other.jsonl"))
 
     let scanner = codexScanner(codex)
-    let result = scanner.scan(processes: [])
+    let result = scanner.scan(now: now, processes: [])
     let session = try #require(result.sessions.first { $0.filePath == live.path })
     #expect(session.kind == .codex)
     #expect(session.sessionId == uuid)
@@ -51,7 +56,7 @@ private func codexScanner(_ codex: URL) -> AgentScanner {
     #expect(result.snapshot.roots.first?.sessionFiles == 2)
 
     // A rescan with nothing new counts nothing.
-    let again = scanner.scan(previousSessions: result.sessions, offsets: result.offsets,
+    let again = scanner.scan(now: now, previousSessions: result.sessions, offsets: result.offsets,
                              identities: result.identities, processes: [])
     #expect(again.usage.isEmpty)
 }
@@ -67,13 +72,13 @@ private func codexScanner(_ codex: URL) -> AgentScanner {
         try FileManager.default.setAttributes([.modificationDate: past], ofItemAtPath: codex.appendingPathComponent(dir).path)
     }
     let scanner = codexScanner(codex)
-    var result = scanner.scan(processes: [])
+    var result = scanner.scan(now: now, processes: [])
     #expect(result.sessions.count == 1)
     let listed = scanner.discovery.listings
 
     let next = codex.appendingPathComponent("sessions/2026/11/25/rollout-2026-11-25T09-00-00-66666666-7777-8888-9999-000000000000.jsonl")
     try write(rollout("66666666-7777-8888-9999-000000000000"), to: next)
-    result = scanner.scan(previousSessions: result.sessions, offsets: result.offsets,
+    result = scanner.scan(now: now, previousSessions: result.sessions, offsets: result.offsets,
                           identities: result.identities, processes: [])
     let session = try #require(result.sessions.first { $0.filePath == next.path })
     #expect(session.kind == .codex)
@@ -91,7 +96,7 @@ private func codexScanner(_ codex: URL) -> AgentScanner {
     // Codex's archived tree list it.
     let archived = codex.appendingPathComponent("archived_sessions/rollout-2026-11-20T08-00-00-\(uuid).jsonl")
     try write(rollout(uuid), to: archived)
-    let result = codexScanner(codex).scan(processes: [])
+    let result = codexScanner(codex).scan(now: now, processes: [])
     #expect(result.sessions.filter { $0.filePath == archived.path }.count == 1)
     #expect(result.sessions.first?.kind == .codex)
     #expect(tokens(result.usage) == 110)
@@ -108,7 +113,7 @@ private func codexScanner(_ codex: URL) -> AgentScanner {
               to: claude.appendingPathComponent("projects/stray.jsonl"))
     let scanner = AgentScanner(providers: [ClaudeCodeProvider(root: claude.path), GenericProvider()],
                                roots: [(.claude, claude.path)])
-    let result = scanner.scan(processes: [])
+    let result = scanner.scan(now: now, processes: [])
     #expect(result.sessions.first { $0.filePath == file.path }?.kind == .claude)
     #expect(result.sessions.first { $0.filePath.hasSuffix("/stray.jsonl") }?.kind == .other)
     #expect(result.snapshot.roots.first?.sessionFiles == 2)
