@@ -194,7 +194,8 @@ final class MemoryMonitor: ObservableObject {
         let limitsEnabled = AppPreferences.shared.limitsEnabled
         queue.async { [weak self] in
             guard let self else { return }
-            if limitsEnabled { self.loadQuotaCache() }
+            // Off: a cache left by an earlier launch (or an earlier build) goes too.
+            if limitsEnabled { self.loadQuotaCache() } else { QuotaCache.remove(Self.quotaCacheURL) }
             do {
                 let store = try HistoryStore()
                 self.historyStore = store
