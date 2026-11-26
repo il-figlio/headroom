@@ -7,9 +7,10 @@ import FoundationNetworking
 
 /// Reads Claude Code's sign-in (its credentials file, or its login-Keychain
 /// item read with UI disabled) or Ante's single OAuth file, and calls
-/// `api.anthropic.com/api/oauth/usage` with the same request identity
-/// Claude Code uses. Never refreshes or writes a token: Claude Code and Ante
-/// refresh their own records, and the next poll re-reads them.
+/// `api.anthropic.com/api/oauth/usage` as Headroom (its own User-Agent, the
+/// same one the Codex request sends). Never refreshes or writes a token:
+/// Claude Code and Ante refresh their own records, and a poll re-reads them
+/// as soon as the sign-in's modification dates change.
 public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
     public let provider: AgentKind = .claude
     static let claudeFile = ".claude/.credentials.json"
@@ -31,8 +32,12 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
     private let http: QuotaHTTP.Get
 
     private let lock = NSLock()
-    /// Avoids re-reading the Keychain while the cached token remains valid.
+    /// The last credential read, kept in memory only, so the Keychain secret
+    /// isn't re-read on every poll. Used only while the sign-in still looks
+    /// the way it did when this was read (`cachedStamp`).
     private var cachedCredentials: Credentials?
+    /// Sign-in metadata taken just before `cachedCredentials` was read.
+    private var cachedStamp: SignInStamp?
     /// Sign-in metadata seen at the last credential failure; nil otherwise.
     private var failureStamp: SignInStamp?
     /// A sign-in change was noticed; the next fetch skips any Retry-After gate.
@@ -100,16 +105,32 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
 
     /// True once per change to the sign-in files' or Keychain item's
     /// modification dates after a credential failure; the next fetch then
-    /// retries even inside a Retry-After gate. Free when nothing failed.
+    /// retries even inside a Retry-After gate. Free when nothing failed
+    /// (a change is then picked up by the next fetch, which never reuses a
+    /// credential read before it).
     public func noteSignInChange(home: URL) -> Bool {
         lock.lock(); let recorded = failureStamp; lock.unlock()
         guard let recorded else { return false }
+        return noteSignInChange(from: recorded, to: stamp(home: home))
+    }
+
+    /// After a credential failure: the sign-in's current metadata, with any
+    /// change since the failure noted. Nil, and free, when nothing failed.
+    private func stampAfterFailure(home: URL) -> SignInStamp? {
+        lock.lock(); let recorded = failureStamp; lock.unlock()
+        guard let recorded else { return nil }
         let current = stamp(home: home)
+        _ = noteSignInChange(from: recorded, to: current)
+        return current
+    }
+
+    private func noteSignInChange(from recorded: SignInStamp, to current: SignInStamp) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard failureStamp == recorded, current != recorded else { return false }
         failureStamp = current
         retryPending = true
         cachedCredentials = nil
+        cachedStamp = nil
         return true
     }
 
@@ -171,32 +192,46 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
                            expiresAt: expiresAt)
     }
 
-    private func validCredentials(home: URL) throws -> Credentials {
+    /// The cached credential while it is still good for a minute and the
+    /// sign-in is unchanged since it was read; otherwise a fresh read. A
+    /// switched account, a deleted sign-in or Keychain use being turned off
+    /// all change `stamp`, so none of them can leave an old token in use.
+    private func validCredentials(home: URL, stamp: SignInStamp) throws -> Credentials {
         lock.lock(); defer { lock.unlock() }
-        // Keychain use was turned off: forget a token that came from it.
-        if cachedCredentials?.origin == .keychain, !keychainAllowed() { cachedCredentials = nil }
-        if let cached = cachedCredentials,
+        if let cached = cachedCredentials, cachedStamp == stamp,
+           cached.origin != .keychain || keychainAllowed(),
            cached.expiresAt.map({ $0 > Date().addingTimeInterval(60) }) ?? true {
             return cached
         }
+        cachedCredentials = nil
+        cachedStamp = nil
         let fresh = try Self.readCredentials(home: home, keychain: allowedKeychain)
+        // `stamp` predates the read: a change made in between is seen as a
+        // change on the next fetch rather than missed.
         cachedCredentials = fresh
+        cachedStamp = stamp
         return fresh
     }
 
     // MARK: Fetch
 
     public func fetch(home: URL) async -> QuotaReading {
-        _ = noteSignInChange(home: home)
+        // The sign-in's metadata is looked at once per fetch: now if a
+        // credential failure is waiting on a change, otherwise only once the
+        // Retry-After gate is known to be open.
+        let looked = stampAfterFailure(home: home)
         if takeRetry() { state.unblock() }
         if let reason = state.blockedReason(now: Date()) {
             return state.fail(reason, provider: provider)
         }
+        let current = looked ?? stamp(home: home)
         let credentials: Credentials
-        do { credentials = try validCredentials(home: home) } catch {
+        do { credentials = try validCredentials(home: home, stamp: current) } catch {
             let message = error.localizedDescription
+            // No sign-in left: its last readings aren't replayed either.
+            if message == Self.missingMessage { state.forget() }
             let retry = message == Self.missingMessage ? nil : Date().addingTimeInterval(900)
-            return failSignIn(message, home: home, retryAfter: retry)
+            return failSignIn(message, stamp: current, retryAfter: retry)
         }
 
         let headers = [
@@ -220,11 +255,11 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
                 return state.succeed(Self.map(decoded, credentials: credentials))
             case 401:
                 clearCachedCredentials()
-                return failSignIn(Self.expiredMessage(credentials.origin), home: home,
+                return failSignIn(Self.expiredMessage(credentials.origin), stamp: current,
                                   retryAfter: Date().addingTimeInterval(900))
             case 403:
                 return failSignIn("Claude sign-in lacks the usage scope — run `\(credentials.origin.command)` to sign in again.",
-                                  home: home, retryAfter: Date().addingTimeInterval(3600))
+                                  stamp: current, retryAfter: Date().addingTimeInterval(3600))
             case 429:
                 return failOther("Claude usage API rate-limited",
                                  retryAfter: Self.retryAfter(response) ?? Date().addingTimeInterval(900))
@@ -242,11 +277,10 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
         return retryPending
     }
 
-    /// A credential problem: remember what the sign-in looked like so a
-    /// change to it can trigger an early retry.
-    private func failSignIn(_ message: String, home: URL, retryAfter: Date?) -> QuotaReading {
-        let current = stamp(home: home)
-        lock.lock(); failureStamp = current; lock.unlock()
+    /// A credential problem: remember what the sign-in looked like when this
+    /// fetch began, so a change to it since can trigger an early retry.
+    private func failSignIn(_ message: String, stamp: SignInStamp, retryAfter: Date?) -> QuotaReading {
+        lock.lock(); failureStamp = stamp; lock.unlock()
         return state.fail(message, provider: provider, retryAfter: retryAfter)
     }
 
@@ -260,7 +294,7 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
     }
 
     private func clearCachedCredentials() {
-        lock.lock(); cachedCredentials = nil; lock.unlock()
+        lock.lock(); cachedCredentials = nil; cachedStamp = nil; lock.unlock()
     }
 
     private static func retryAfter(_ response: HTTPURLResponse) -> Date? {

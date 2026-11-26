@@ -94,7 +94,9 @@ struct SystemClaudeKeychain: ClaudeKeychain {
 
 /// What a sign-in change looks like from the outside: file modification
 /// times and the Keychain item's modification date. Gathered without
-/// opening a file or reading a secret.
+/// opening a file or reading a secret. A cached token is reused only while
+/// this is unchanged since it was read, and a credential failure is retried
+/// early once it changes.
 struct SignInStamp: Equatable, Sendable {
     var claudeFile: Date?
     var anteFile: Date?

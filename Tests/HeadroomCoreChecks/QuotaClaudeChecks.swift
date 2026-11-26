@@ -17,6 +17,7 @@ private final class FakeKeychain: ClaudeKeychain, @unchecked Sendable {
     private var _info: KeychainItemInfo?
     private var _secret: KeychainSecret
     private var _calls = 0
+    private var _secretReads = 0
 
     init(info: KeychainItemInfo? = nil, secret: KeychainSecret = .missing) {
         _info = info; _secret = secret
@@ -25,7 +26,13 @@ private final class FakeKeychain: ClaudeKeychain, @unchecked Sendable {
         get { lock.lock(); defer { lock.unlock() }; return _info }
         set { lock.lock(); _info = newValue; lock.unlock() }
     }
+    var secret: KeychainSecret {
+        get { lock.lock(); defer { lock.unlock() }; return _secret }
+        set { lock.lock(); _secret = newValue; lock.unlock() }
+    }
+    /// Attribute and secret reads together.
     var calls: Int { lock.lock(); defer { lock.unlock() }; return _calls }
+    var secretReads: Int { lock.lock(); defer { lock.unlock() }; return _secretReads }
 
     func itemInfo() -> KeychainItemInfo? {
         lock.lock(); defer { lock.unlock() }
@@ -35,7 +42,19 @@ private final class FakeKeychain: ClaudeKeychain, @unchecked Sendable {
     func readSecret() -> KeychainSecret {
         lock.lock(); defer { lock.unlock() }
         _calls += 1
+        _secretReads += 1
         return _secret
+    }
+}
+
+/// A switch a check can flip between fetches.
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _on: Bool
+    init(_ on: Bool) { _on = on }
+    var on: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _on }
+        set { lock.lock(); _on = newValue; lock.unlock() }
     }
 }
 
@@ -74,6 +93,7 @@ private struct Home {
         if let modified { attributes[.modificationDate] = modified }
         if !attributes.isEmpty { try? FileManager.default.setAttributes(attributes, ofItemAtPath: file.path) }
     }
+    func delete(_ relative: String) { try? FileManager.default.removeItem(at: url.appendingPathComponent(relative)) }
     func remove() { try? FileManager.default.removeItem(at: url) }
 }
 
@@ -231,6 +251,94 @@ private func source(_ keychain: FakeKeychain, allowed: Bool = true, http: FakeHT
     let healthy = QuotaReading(provider: .codex)
     let marked = QuotaSources.markClaudeSignInChanged([claudeCode, ante, healthy])
     #expect(marked.map(\.error) == [ClaudeQuotaSource.signInChangedMessage, "old", nil])
+}
+
+// MARK: - A cached token never outlives the sign-in it came from
+
+private let accountA = #"{"claudeAiOauth":{"accessToken":"token-a","expiresAt":4102444800000,"subscriptionType":"max"}}"#
+private let accountB = #"{"claudeAiOauth":{"accessToken":"token-b","expiresAt":4102444800000,"subscriptionType":"pro"}}"#
+private let signedInAt = Date(timeIntervalSince1970: 1_700_000_000)
+
+@Test func accountSwitchIsUsedByTheNextFetch() async {
+    let home = Home(); defer { home.remove() }
+    home.write(ClaudeQuotaSource.claudeFile, accountA, modified: signedInAt)
+    let http = FakeHTTP()
+    let claude = source(FakeKeychain(), allowed: false, http: http)
+    #expect(await claude.fetch(home: home.url).plan == "Max")
+    #expect(await claude.fetch(home: home.url).plan == "Max")
+
+    // `claude` signed in as someone else: nothing failed, the old token
+    // hasn't expired, and the file's modification date is all that changed.
+    home.write(ClaudeQuotaSource.claudeFile, accountB, modified: signedInAt.addingTimeInterval(60))
+    #expect(!claude.noteSignInChange(home: home.url), "no failure, so the minute check stays free")
+    let switched = await claude.fetch(home: home.url)
+    #expect(switched.error == nil && switched.plan == "Pro")
+    #expect(http.requests.map { $0.1["Authorization"] } == ["Bearer token-a", "Bearer token-a", "Bearer token-b"])
+}
+
+@Test func deletedSignInIsNeitherSentNorReplayed() async {
+    let home = Home(); defer { home.remove() }
+    home.write(ClaudeQuotaSource.claudeFile, accountA, modified: signedInAt)
+    let http = FakeHTTP()
+    let claude = source(FakeKeychain(), allowed: false, http: http)
+    #expect(await claude.fetch(home: home.url).windows.map(\.label) == ["5h"])
+
+    home.delete(ClaudeQuotaSource.claudeFile)
+    let gone = await claude.fetch(home: home.url)
+    #expect(gone.error == "No Claude sign-in found — run `claude` to sign in.")
+    #expect(gone.plan == nil && gone.windows.isEmpty, "the removed account's readings aren't replayed")
+    #expect(http.requests.count == 1, "the removed account's token isn't sent again")
+}
+
+@Test func credentialWithoutExpiryFollowsTheSignInToo() async {
+    let home = Home(); defer { home.remove() }
+    home.write(ClaudeQuotaSource.claudeFile, #"{"claudeAiOauth":{"accessToken":"forever-a"}}"#, modified: signedInAt)
+    let http = FakeHTTP()
+    let claude = source(FakeKeychain(), allowed: false, http: http)
+    _ = await claude.fetch(home: home.url)
+    home.write(ClaudeQuotaSource.claudeFile, #"{"claudeAiOauth":{"accessToken":"forever-b"}}"#,
+               modified: signedInAt.addingTimeInterval(60))
+    _ = await claude.fetch(home: home.url)
+    home.delete(ClaudeQuotaSource.claudeFile)
+    #expect(await claude.fetch(home: home.url).error == "No Claude sign-in found — run `claude` to sign in.")
+    #expect(http.requests.map { $0.1["Authorization"] } == ["Bearer forever-a", "Bearer forever-b"])
+}
+
+@Test func keychainItemChangeRereadsTheSecretOnlyThen() async {
+    let home = Home(); defer { home.remove() }
+    let keychain = FakeKeychain(info: .init(modified: signedInAt), secret: .found(keychainRecord))
+    let http = FakeHTTP()
+    let claude = source(keychain, http: http)
+    #expect(await claude.fetch(home: home.url).plan == "Pro")
+    #expect(keychain.secretReads == 1)
+
+    // Unchanged item: one attributes-only look, no second secret read.
+    let before = keychain.calls
+    #expect(await claude.fetch(home: home.url).plan == "Pro")
+    #expect(keychain.secretReads == 1 && keychain.calls == before + 1)
+
+    // Claude Code signed in as someone else; only the item's date says so.
+    keychain.secret = .found(Data(#"{"claudeAiOauth":{"accessToken":"kc-other","expiresAt":4102444800000,"subscriptionType":"max"}}"#.utf8))
+    keychain.info = .init(modified: signedInAt.addingTimeInterval(60))
+    let switched = await claude.fetch(home: home.url)
+    #expect(switched.error == nil && switched.plan == "Max")
+    #expect(keychain.secretReads == 2)
+    #expect(http.requests.map { $0.1["Authorization"] } == ["Bearer kc-token", "Bearer kc-token", "Bearer kc-other"])
+}
+
+@Test func keychainTokenIsDroppedWhenKeychainUseIsTurnedOff() async {
+    let home = Home(); defer { home.remove() }
+    let keychain = FakeKeychain(info: .init(modified: signedInAt), secret: .found(keychainRecord))
+    let http = FakeHTTP()
+    let allowed = Flag(true)
+    let claude = ClaudeQuotaSource(keychain: keychain, keychainAllowed: { allowed.on }, http: http.get)
+    #expect(await claude.fetch(home: home.url).error == nil)
+
+    allowed.on = false
+    let calls = keychain.calls
+    let off = await claude.fetch(home: home.url)
+    #expect(off.error == "No Claude sign-in found — run `claude` to sign in.")
+    #expect(http.requests.count == 1 && keychain.calls == calls)
 }
 
 // MARK: - Request

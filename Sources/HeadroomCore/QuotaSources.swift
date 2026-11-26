@@ -113,6 +113,14 @@ public final class QuotaSourceState: @unchecked Sendable {
         blockedMessage = nil
     }
 
+    /// Drops the last good reading and any Retry-After gate.
+    func forget() {
+        lock.lock(); defer { lock.unlock() }
+        lastGood = nil
+        blockedUntil = .distantPast
+        blockedMessage = nil
+    }
+
     func succeed(_ reading: QuotaReading) -> QuotaReading {
         lock.lock(); defer { lock.unlock() }
         lastGood = reading
