@@ -8,20 +8,13 @@ download.
 
 ## [Unreleased]
 
-### Changed
-- History, the quota cache and the observation log now live in
-  `~/Library/Application Support/org.headroom.app`. An unrelated app also
-  called Headroom (the `headroom` Homebrew cask) uses
-  `~/Library/Application Support/Headroom`, and uninstalling it with `--zap`
-  deletes that folder. On first launch Headroom moves its own files out of
-  it, but only when the log there was written by this app.
-
 ### Added
 - A short welcome on first launch explaining what Headroom measures, where
   it lives, and the optional features, plus a Settings window (⌘,) and an
   About panel.
 - Public updates: Headroom checks a public, signed update feed and no longer
-  needs a GitHub login. Downloads come as a notarized DMG or ZIP.
+  needs a GitHub login. The download is a notarized DMG, and later updates
+  install in place.
 - Hover details across the panel: rest on any row, meter, or tile to see
   exactly what it measures.
 - Named Claude accounts from Ante: each signed-in account gets its own row
@@ -33,11 +26,31 @@ download.
   Code's Keychain sign-in** in Settings → Limits turns Keychain use off.
 - Claude's model-specific weekly windows (for example Sonnet or Opus) appear
   alongside the 5-hour and weekly windows when Anthropic reports them.
-- When Claude Code's sign-in changes, Limits notices and tries again without
-  reading the secret to check.
+- When a sign-in changes, Limits notices on its next poll without reading
+  the secret to check, even if the previous token still works, so switching
+  accounts shows the new account.
 - Codex sessions stored in dated folders are now picked up by Agents.
 
 ### Changed
+- History, the quota cache and the observation log now live in
+  `~/Library/Application Support/org.headroom.app`. An unrelated app also
+  called Headroom (the `headroom` Homebrew cask) uses
+  `~/Library/Application Support/Headroom`, and uninstalling it with `--zap`
+  deletes that folder. On first launch Headroom moves its own files out of
+  it, the `Archives` folder included, but only when the log there was
+  written by this app. An interrupted move is finished on the next launch,
+  and the move is skipped while another copy of Headroom is running.
+- The disk consumer scan starts only when you press its button in Trends.
+  It no longer starts by itself when you open Trends with results more than
+  a day old. The first scan can make macOS ask for access to folders such
+  as Desktop, Documents, and Downloads; Headroom works without them and
+  labels those folders as partial.
+- The fill rate and the days-until-full estimate appear once there are
+  several hours of history, and are fitted across all of the window's
+  samples.
+- The Agents card's tokens and estimated spend for today count only usage
+  from the current local day, not the lifetime total of every session that
+  was active today.
 - The Claude usage request identifies itself as `Headroom`, like the Codex
   request, instead of as the Claude Code CLI, so Headroom no longer runs
   `claude --version`.
@@ -49,6 +62,11 @@ download.
 - Limits is opt-in on new installs. While it's off, Headroom reads no
   sign-ins, runs no provider CLI, and makes no usage requests. Existing
   installs keep their current setting.
+- With Limits off, Settings no longer looks for sign-ins at all: it doesn't
+  check whether one exists and doesn't list Ante account names. Turning
+  Limits off also forgets any token held in memory and deletes
+  `quota-cache.json`.
+- Limits usage requests don't follow redirects.
 - New app icon: a white gauge on a black tile with its needle near the low
   end.
 - Limits is clearer: the most constrained window is shown first, values are
@@ -59,6 +77,8 @@ download.
 - The Agents card is built around what's running now: project, agent, and
   the live memory of each agent's processes, then today's tokens and
   estimated spend.
+- Agents reads the process list with `/bin/ps` and stops waiting for it
+  after a time limit.
 - Limits never refreshes, writes, or copies provider credentials and never
   asks for Keychain permission. When a sign-in expires, the provider's own
   app or CLI renews it.
@@ -67,11 +87,29 @@ download.
   faster, and the `log.md` report is rewritten at most every 15 minutes (or
   when you open it) instead of every minute.
 
+### Removed
+- Headroom no longer reads the early prototype's `org.memoryline.app`
+  preferences.
+
 ### Fixed
 - Token counts from agent transcripts are accurate when a line is still
   being written, a read fails, or the file grows during a read. Previously
   such lines could be skipped or counted twice.
 - A replaced or restored transcript is no longer counted twice.
+- Codex token totals no longer count cached input and reasoning output
+  twice.
+- A Claude Code message that appears on several transcript lines, or is
+  copied into a resumed session's transcript, is counted once.
+- Opus 4 and 4.1 usage is no longer priced at the Opus 4.5 rate. Models
+  without a known price stay in the unpriced bucket.
+- Samples, events, hourly agent totals, and agent session rows older than
+  30 days are pruned whenever the database is opened, not only while
+  recording.
+- Stored agent session metadata (project folder and transcript path) is
+  deleted 30 days after the session's last activity.
+- A Codex usage response with an unexpected field loses only that field or
+  window instead of the whole reading, and a response that can't be decoded
+  is reported as an unexpected response rather than a network error.
 - A failed Ante usage read no longer blanks the account, a hung Ante process
   is stopped after its timeout, and the last good reading survives a failed
   fetch at launch.

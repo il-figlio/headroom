@@ -10,7 +10,7 @@ Headroom ships as a universal (Apple Silicon + Intel) app for macOS 13 or later,
 | `packaging/app.env` | App name, executable, bundle ID, minimum macOS, GitHub repo slug, feed URL, Sparkle public key and Keychain account, cask token, tap repo. |
 | `Resources/Info.plist.in` | Info.plist template, rendered by `scripts/appconfig.py` during `scripts/build.sh`. |
 | `Sources/HeadroomCore/UpdatePolicy.swift` | The feed URL and download allowlist compiled into the app. A Swift Testing check fails if they drift from `packaging/app.env`. |
-| `packaging/homebrew/headroom.rb` | Homebrew cask template. |
+| `packaging/homebrew/headroom.rb` | Homebrew cask template. It declares a conflict with the official `headroom` cask, a different app that also installs `/Applications/Headroom.app`. |
 
 To reuse this pipeline for another app, copy `VERSION`, `packaging/`, `Resources/Info.plist.in` and the `scripts/` release tools, then edit `packaging/app.env` and the `UpdatePolicy` constants.
 
@@ -28,11 +28,13 @@ To reuse this pipeline for another app, copy `VERSION`, `packaging/`, `Resources
 There is no hosted CI. Before pushing to `main` or tagging, run:
 
 ```sh
-./scripts/verify.sh          # Swift Testing checks, XCTest when Xcode is installed, universal build, release dry run (~1 min)
-./scripts/verify.sh --quick  # checks only (~5 s)
+./scripts/verify.sh          # all tests, universal build (ad-hoc signed), release dry run; a few minutes
+./scripts/verify.sh --quick  # tests only
 ```
 
-Every test runs every time, with no skips or retries; fix a flaky test instead of retrying it. Each step prints its wall time.
+Every test runs every time. The package has one test target, `Tests/HeadroomCoreChecks` (Swift Testing), which needs only the Command Line Tools, so nothing is skipped on a Mac without Xcode. There are no retries; fix a flaky test instead of retrying it. Each step prints its wall time.
+
+`scripts/test-quit.sh` is not part of this gate. It launches a GUI fixture app and a Headroom binary, so it can't run unattended; run it by hand when Quit or process handling changes.
 
 ## Credentials (one-time owner setup)
 
@@ -65,15 +67,22 @@ Notarization uses one of three paths, in this order:
 ./scripts/release.py package
 ./scripts/release.py appcast            # signs with the Keychain key (account org.headroom.app)
 ./scripts/release.py verify --distribution
-./scripts/release.py publish            # draft release via gh
+# 2. Commit the release (VERSION, notes, changelog) and push main, then tag that commit:
+git tag -s v0.9.0 -m 'Headroom 0.9.0'   # signed annotated tag
+git push origin v0.9.0
+./scripts/release.py publish --verify-tag   # draft release for the pushed tag, via gh
 gh release edit v0.9.0 --draft=false --latest --repo il-figlio/headroom
-./scripts/release.py promote            # then commit appcast.xml to main
+./scripts/release.py promote            # downloads and checks the published ZIP; then commit appcast.xml to main
 ./scripts/render-cask.py                # dist/releases/v0.9.0/headroom.rb for the tap
 ```
 
 Outputs go to `dist/releases/v<version>/`: `Headroom-<version>-universal.zip` (Sparkle), `Headroom-<version>.dmg` (people; APFS/ULFO with an Applications link), `appcast.xml`, `SHA256SUMS`, `headroom.rb`.
 
-`appcast` and `publish` refuse a signing key whose public half is not `SPARKLE_PUBLIC_ED_KEY`. Every feed and archive signature is re-checked with an independent Ed25519 verifier (`scripts/ed25519.py`). `promote` refuses a feed that does not verify, so a dry-run feed can never be promoted.
+**The signed tag comes first.** Publishing a draft whose tag doesn't exist makes GitHub create the tag itself, as an unsigned lightweight tag, and a later `git tag -s` then collides with it. So create and push the signed annotated tag before `publish`. `publish --verify-tag` refuses unless the tag on GitHub is an annotated tag, is the same object as the local tag, and passes `git verify-tag`; it warns if the tag isn't on `HEAD`. Without `--verify-tag`, `publish` still prepares the draft against `HEAD` for review, but when the tag is missing or isn't the signed one it ends by telling you not to publish the draft yet.
+
+`appcast` refuses a signing key whose public half is not `SPARKLE_PUBLIC_ED_KEY`, and `publish` refuses a feed or archive signature that does not verify against that key. Every feed and archive signature is re-checked with an independent Ed25519 verifier (`scripts/ed25519.py`). The only enclosure URL any step accepts is the public release download, the one `UpdatePolicy.allowsArchive` accepts in the app.
+
+`promote` runs after the release is public. It refuses a feed that does not verify, so a dry-run feed can never be promoted. It then downloads the published ZIP anonymously, the way a client would, and refuses unless its length and the enclosure's `sparkle:edSignature` match the downloaded file. `--no-download-check` skips the download and prints a warning; `--from-release` promotes the `appcast.xml` attached to the release instead of the local one.
 
 ### Dry run (no secrets, no network)
 
@@ -89,14 +98,12 @@ This builds the ZIP and DMG and signs an appcast and the ZIP with a throwaway Ed
 
 Builds up to 0.8.0 came from the private repository (its full history is in `il-figlio/headroom-private`; the earlier public history is archived as `il-figlio/headroom-archive`). They poll `https://raw.githubusercontent.com/il-figlio/headroom/main/appcast.xml` with a gh token and require a feed signed with an EdDSA key that was rotated on 2026-11-24, so they can't update themselves to 0.9.0 or later.
 
-**On each Mac running Headroom 0.8.0 or earlier, once:** quit Headroom, then install `Headroom-<version>.dmg` from https://github.com/il-figlio/headroom/releases/latest over it (a copy in `~/Applications` should be deleted). On first launch Headroom moves its own files (history, quota cache, log) from `~/Library/Application Support/Headroom` to `~/Library/Application Support/org.headroom.app`, but only if the `log.md` there was written by this app. An unrelated app, extraheadroom's Headroom, uses the same folder name, so its files and the development `signing/` keychain stay put. Preferences stay in the `org.headroom.app` domain. Every later update is automatic and needs no login.
-
-`release.py`'s `--legacy-bridge` and `--legacy-asset-id` options predate the key rotation. They can't reach the old builds and should not be used.
+**On each Mac running Headroom 0.8.0 or earlier, once:** quit Headroom, then install `Headroom-<version>.dmg` from https://github.com/il-figlio/headroom/releases/latest over it (a copy in `~/Applications` should be deleted). On first launch Headroom moves its own files (history, quota cache, log, and the `Archives` folder) from `~/Library/Application Support/Headroom` to `~/Library/Application Support/org.headroom.app`, but only if the `log.md` there was written by this app. A move that was interrupted is finished on the next launch, and the move is skipped while another copy of Headroom is running. An unrelated app, extraheadroom's Headroom, uses the same folder name, so its files and the development `signing/` keychain stay put. Preferences stay in the `org.headroom.app` domain. Every later update is automatic and needs no login.
 
 ## Signing notes
 
 - `scripts/sign.sh` signs Sparkle's nested code inside-out (Downloader.xpc, Installer.xpc, Autoupdate, Updater.app, the framework), then the app.
 - With a Developer ID identity it signs with hardened runtime and secure timestamps. `HEADROOM_SIGN_KEYCHAIN` selects a specific keychain. `HEADROOM_SIGN_IDENTITY=-` signs ad-hoc.
-- With no identity, it keeps the persistent self-signed "Headroom Local" identity for development builds.
+- With no identity, it keeps the persistent self-signed "Headroom Local" identity for development builds. The identity lives in its own keychain file under `~/Library/Application Support/Headroom/signing/`, which is passed to `codesign --keychain`. The script unlocks that keychain while it runs and locks it again when it exits. It doesn't read or change the keychain search list or the login keychain.
 - The Sparkle key is in the publisher's login Keychain under account `org.headroom.app`. Its public half is `SPARKLE_PUBLIC_ED_KEY` in `packaging/app.env`. Back it up outside the repository.
 - No private key, certificate or GitHub credential is in the app or the repository.

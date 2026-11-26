@@ -15,9 +15,9 @@ Sources/
 ├── CMemory/           C shim over kernel counters (host_statistics64, proc_pid_rusage, IOPOL)
 └── CSQLite/           Module map exposing the system libsqlite3
 
-Tests/HeadroomCoreTests/   XCTest suite for the core target (needs full Xcode)
-Tests/HeadroomCoreChecks/  Swift Testing checks (run without Xcode via scripts/check.sh)
+Tests/HeadroomCoreChecks/  The tests: one Swift Testing target (scripts/check.sh)
 scripts/                   Build, sign, test, screenshot, and release scripts
+packaging/                 App values for the scripts, Homebrew cask template
 docs/                      Screenshots and longer documentation
 ```
 
@@ -38,10 +38,14 @@ Quit any running copy of Headroom before launching a new build.
 
 Source builds are signed with a persistent self-signed identity,
 "Headroom Local", so macOS remembers Keychain permission across rebuilds.
-`scripts/sign.sh` creates it on the first build in its own keychain under
-`~/Library/Application Support/Headroom/signing/`. It never touches your
-login keychain. Distribution builds use Developer ID signing instead; see
-[docs/releases.md](docs/releases.md).
+`scripts/sign.sh` creates it on the first build in its own keychain file
+under `~/Library/Application Support/Headroom/signing/`, next to a file
+holding that keychain's random password. On each build the script unlocks
+that keychain, signs with `codesign --keychain`, and locks it again. It
+doesn't read or change your login keychain or your keychain search list.
+To build without any keychain, sign ad hoc:
+`HEADROOM_SIGN_IDENTITY=- ./scripts/build.sh`. Distribution builds use
+Developer ID signing instead; see [docs/releases.md](docs/releases.md).
 
 ### Command Line Tools only
 
@@ -60,14 +64,17 @@ Use whichever older SDK version you have.
 
 | Command | What it runs | Needs |
 | --- | --- | --- |
-| `./scripts/verify.sh` | Everything below plus a universal build and a release dry run, with timings. Run before every push. | Command Line Tools or Xcode |
-| `./scripts/check.sh` | Swift Testing checks in `Tests/HeadroomCoreChecks` | Command Line Tools or Xcode |
-| `./scripts/test.sh` | The full `swift test` suite, including the XCTest tests | Full Xcode |
-| `./scripts/test-quit.sh` | Builds a disposable fixture app and checks Quit and Force Quit against it | Command Line Tools or Xcode |
+| `./scripts/verify.sh` | Three steps, with timings: every test (`check.sh`), a universal ad-hoc-signed build, and an offline release dry run. It does not run `test-quit.sh`. | Command Line Tools or Xcode |
+| `./scripts/verify.sh --quick` | Every test (`check.sh`) and nothing else | Command Line Tools or Xcode |
+| `./scripts/check.sh` | Every test: the Swift Testing suites in `Tests/HeadroomCoreChecks`, the package's only test target | Command Line Tools or Xcode |
+| `./scripts/test-quit.sh` | A separate manual check. Builds a disposable fixture app, launches it, and checks Quit and Force Quit against it with a debug build of Headroom | Command Line Tools or Xcode, and a logged-in desktop session |
 
-Run `verify.sh` before every push (`--quick` runs only the checks). There's no hosted CI, so this is the gate.
-`test-quit.sh` refuses to quit anything whose bundle ID isn't its dedicated
-fixture. Keep it that way.
+Run `verify.sh` before every push. There's no hosted CI, so this is the
+gate, and every test runs every time: there is no Xcode-only suite and
+nothing is skipped. `test-quit.sh` is not part of the gate because it
+launches apps and can't run unattended; run it by hand when you change Quit
+or process handling. It refuses to quit anything whose bundle ID isn't its
+dedicated fixture. Keep it that way.
 
 Helpful checks against a built app:
 
@@ -94,9 +101,10 @@ break them won't be merged.
 2. **Never quits other apps automatically.** Quit is always user-initiated,
    and Force Quit always asks first. Sparkle may quit and relaunch Headroom
    to install an update.
-3. **No full-tree scans on a timer.** Capacity comes from volume attributes
-   only. Folder walks are on demand, cancellable, single-threaded, and run
-   at `IOPOL_THROTTLE`.
+3. **No folder scans unless the user asks.** Capacity comes from volume
+   attributes only. A folder walk starts only from an explicit action (the
+   scan button in Trends, or `--scan`), never on a timer or when a window
+   opens, and is cancellable, single-threaded, and run at `IOPOL_THROTTLE`.
 4. **Local by default.** No telemetry, analytics, or external AI calls.
    Network access is limited to Limits requests that reuse the user's
    existing sign-ins and to Sparkle update checks and downloads. Don't add
@@ -127,9 +135,10 @@ If a change affects what Headroom reads, stores, or sends, update
   `ALTER TABLE`) and test against a real, populated database.
 - App icons are cached and `NSWorkspace.runningApplications` is read off the
   main thread. Keep it that way.
-- Add tests to `Tests/HeadroomCoreChecks` (Swift Testing) or
-  `Tests/HeadroomCoreTests` for anything in the core target. Prefer fakes
-  and in-memory stores over timing-dependent tests.
+- Add tests to `Tests/HeadroomCoreChecks` (Swift Testing) for anything in
+  the core target. Don't add an XCTest target: it needs full Xcode, so it
+  wouldn't run on a Mac with only the Command Line Tools. Prefer fakes and
+  in-memory stores over timing-dependent tests.
 - Add a line under **Unreleased** in [CHANGELOG.md](CHANGELOG.md) for
   user-visible changes.
 

@@ -20,8 +20,9 @@ your Mac, and never deletes anything.
 ## Download
 
 - **[Download the latest release](https://github.com/il-figlio/headroom/releases/latest)**
-  from GitHub Releases. Unzip it and move `Headroom.app` to your
-  Applications folder.
+  from GitHub Releases. Download `Headroom-<version>.dmg`, open it, and
+  drag `Headroom.app` to the Applications folder. (The `-universal.zip`
+  next to it is the archive Headroom's own updater downloads.)
 - **Homebrew** (coming soon):
 
   ```sh
@@ -39,8 +40,9 @@ Releases are signed with a Developer ID and notarized by Apple.
 
 - **Memory pressure:** Normal, Elevated, or Critical, straight from the
   kernel, with memory used, swap, and compressed memory.
-- **Disk:** free, purgeable, and total space, the rate it's filling, and an
-  estimate of days until full.
+- **Disk:** free, purgeable, and total space and, once Headroom has several
+  hours of history, the rate it's filling and an estimate of days until
+  full.
 - **Apps:** each app's memory, including its helper processes, with
   **Quit** (apps can ask you to save) and a confirmed **Force Quit**.
   Nothing is ever quit automatically.
@@ -51,7 +53,8 @@ Releases are signed with a Developer ID and notarized by Apple.
 - **Agents:** running coding-agent sessions, their memory, and today's
   tokens and estimated spend. Off by default.
 - **Trends:** 24-hour memory and disk charts, time spent under pressure,
-  recommendations, and an on-demand list of the largest folders.
+  recommendations, and a list of the largest folders that is measured only
+  when you press its scan button.
 
 Hover over any row, meter, or tile for details. Hide or show cards from the
 panel's **···** menu.
@@ -68,13 +71,14 @@ For the details behind each reading, see [How Headroom works](docs/how-it-works.
 ## Privacy
 
 Headroom has no account, no analytics, and no telemetry. Your history stays
-on your Mac for 30 days. Headroom connects to the internet only to check
-for updates and, if you turn on Limits, to ask Codex and Claude for your own
-plan usage through their unofficial usage endpoints. Headroom never
-refreshes, writes, or copies a provider's sign-in. Agents reads
-coding-agent transcripts read-only and keeps only metadata such as token
-counts. [PRIVACY.md](PRIVACY.md) lists exactly what is read, stored, and
-sent.
+on your Mac: readings older than 30 days are deleted automatically, and
+archives you create stay until you delete them. Headroom connects to the
+internet only to check for updates and, if you turn on Limits, to ask Codex
+and Claude for your own plan usage through their unofficial usage
+endpoints. Headroom never refreshes, writes, or copies a provider's
+sign-in. Agents reads coding-agent transcripts read-only and keeps only
+metadata such as token counts. [PRIVACY.md](PRIVACY.md) lists exactly what
+is read, stored, and sent.
 
 <p align="center">
   <img src="docs/settings-tour.gif" alt="Animated tour of Headroom's Settings tabs: General, Limits, and History, shown with demo data" width="420">
@@ -89,7 +93,8 @@ Headroom's settings, and check manually at any time.
 
 ## Uninstall
 
-1. In Headroom's settings, turn off **Launch at Login**, then quit Headroom.
+1. In Headroom's settings (Settings → General), turn off **Open at login**,
+   then quit Headroom.
 2. Move `Headroom.app` from Applications to the Trash.
 3. To remove your history and settings too:
 
@@ -98,8 +103,8 @@ Headroom's settings, and check manually at any time.
    defaults delete org.headroom.app
    ```
 
-If you built Headroom from source, the build also created a local
-code-signing keychain at
+If you built Headroom from source with the default signing, the build also
+created a local code-signing keychain at
 `~/Library/Application Support/Headroom/signing/`. To remove it, run:
 
 ```sh

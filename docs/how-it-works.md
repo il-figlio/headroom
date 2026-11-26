@@ -28,14 +28,24 @@ reads and sends, see [PRIVACY.md](../PRIVACY.md).
 - **Free, purgeable, and total** capacity from a single volume-attribute
   read, sampled with memory history. No scanning is involved.
 - **Trends:** a 24-hour free-space chart, the measured fill rate, and an
-  estimate of days until full.
+  estimate of days until full. The fill rate and the estimate appear only
+  once there are several hours of history, and they are fitted across all
+  of the window's samples.
 - **Consumer scan, on demand only.** A bounded set of roots (your home
   folder at depth one, `~/Library` one level deeper, and `/Applications`)
   is walked on a single thread at the lowest I/O priority
-  (`IOPOL_THROTTLE`). The scan can be cancelled and its results are cached
-  with per-location changes since the previous scan. It runs only when you
-  open Trends and the cached results are more than a day old, or when you
-  press **Rescan**. It never runs on a timer.
+  (`IOPOL_THROTTLE`). The scan never starts by itself: in the app, only
+  the scan button in Trends (**Scan consumers** the first time, **Rescan**
+  after that) starts it, and the `--scan` flag runs the same scan from a
+  terminal. It can be cancelled, and its results are kept, with
+  per-location changes since the previous scan, until the next scan
+  replaces them. The scan also runs `/usr/bin/tmutil listlocalsnapshots /`
+  to count Time Machine local snapshots.
+- **Folder access prompts.** The first scan can make macOS ask whether
+  Headroom may access folders such as Desktop, Documents, and Downloads
+  and, on macOS 14 or later, other apps' data. Headroom works without
+  granting any of them: a folder you don't allow isn't read, and its row is
+  labeled as a partial reading.
 - **Non-destructive by design.** Rows offer *Reveal in Finder* and *Copy
   path*. There is no delete button. Headroom observes continuously,
   analyzes on demand, and never deletes.
@@ -51,7 +61,10 @@ otherwise.
 Limits shows your Codex and Claude plan usage windows, the plan name,
 credit balance where one exists, and reset times. On new installs Limits is
 off until you turn it on. While it is off, Headroom reads no sign-ins, runs
-no command-line tools, and makes no usage requests.
+no command-line tools, and makes no usage requests, and Settings doesn't
+look for sign-ins at all: it doesn't check whether a sign-in exists and
+doesn't list Ante account names. Turning Limits off also forgets any token
+held in memory and deletes `quota-cache.json`.
 
 - **Codex** reads the sign-in that the Codex CLI stores in
   `~/.codex/auth.json` (read-only) and asks
@@ -70,9 +83,10 @@ no command-line tools, and makes no usage requests.
   ask you, it fails quietly and Limits says Claude usage is unavailable.
   **Use Claude Code's Keychain sign-in** in Settings → Limits (on by
   default) turns Keychain use off entirely.
-- **Sign-in changes.** When Claude Code renews or replaces its sign-in,
-  Headroom notices from the modification time of the file or Keychain item,
-  without reading the secret, and tries again.
+- **Sign-in changes.** Headroom notices a changed sign-in from the
+  modification time of the file or Keychain item, without reading the
+  secret to check. It notices on the next poll even when the previous token
+  still works, so after you switch accounts Limits shows the new one.
 - **Named Claude accounts from Ante.** Separate rows for accounts such as
   Personal and Work need the Ante CLI installed at `~/.ante/bin/ante`, with
   named sign-ins in `~/.ante/auth/credentials/oauth/anthropic/`. Headroom
@@ -84,10 +98,15 @@ no command-line tools, and makes no usage requests.
   provider tokens. When a sign-in expires, Limits says so and the
   provider's own app or CLI (or Ante) renews it.
 - **Polite polling.** About every 15 minutes and when you open the panel.
-  `Retry-After` and HTTP 429 responses back a source off. A failed refresh
-  keeps the last good reading, dimmed and labeled with when it was fetched.
-  A window whose reset time has passed shows "Reset — updating". Collapsed,
-  each account shows its most constrained window; expand it for the rest.
+  `Retry-After` and HTTP 429 responses back a source off. Usage requests
+  don't follow redirects. A failed refresh keeps the last good reading,
+  dimmed and labeled with when it was fetched. A window whose reset time
+  has passed shows "Reset — updating". Collapsed, each account shows its
+  most constrained window; expand it for the rest.
+- **Unexpected responses.** If a Codex response contains a field Headroom
+  doesn't expect, only that field or window is dropped and the rest is
+  shown. A response that can't be decoded at all is reported as an
+  unexpected response, not as a network error.
 - **Nothing without a sign-in.** If no provider sign-in exists, nothing is
   fetched and the card stays hidden.
 
@@ -114,6 +133,10 @@ is off, Headroom does no agent scanning at all.
   the agent, and the live memory footprint of each agent's process tree,
   then today's tokens and estimated spend. A process shared by several
   transcripts is counted once.
+- **Today means today.** Today's tokens and estimated spend count only
+  usage whose own timestamps fall in the current local day. They are
+  derived from the hourly totals, so a session that has run for days adds
+  only what it used today, not its lifetime total.
 - **Provider-agnostic.** Headroom watches the folders coding agents keep
   their session transcripts in (`~/.claude`, `~/.codex`, `~/.openclaw`,
   `~/.devin`, and the folders used by Goose, opencode, Aider, Gemini,
@@ -126,12 +149,21 @@ is off, Headroom does no agent scanning at all.
   file identities, sessions, and usage are saved together, so a replaced or
   restored transcript isn't counted twice. Sessions are rescanned about every
   45 seconds, or every 15 seconds while the panel is open.
-- **Live health.** Transcripts are matched to running processes: `live`,
-  `stuck` (process alive but transcript quiet for 10 minutes), `zombie`
-  (file grew with no process), or `ended`.
-- **Honest cost.** Tokens are priced per model from a versioned table. Models
-  without a known price are counted in a separate *unpriced* bucket instead
-  of being folded into a wrong-looking total.
+- **Counted once.** A Claude Code message that appears on several transcript
+  lines, or that is copied into a resumed session's transcript, is counted
+  once. Codex totals count cached input and reasoning output once, not a
+  second time on top of the input and output that already include them.
+- **Live health.** Transcripts are matched to running processes, which are
+  listed with `/bin/ps` under a time limit: `live`, `stuck` (process alive
+  but transcript quiet for 10 minutes), `zombie` (file grew with no
+  process), or `ended`.
+- **Honest cost.** Tokens are priced per model from a versioned table, each
+  model at its own rate: Opus 4 and 4.1, for example, are not priced at the
+  Opus 4.5 rate. Models without a known price are counted in a separate
+  *unpriced* bucket instead of being folded into a wrong-looking total.
+- **Retention.** Hourly token totals older than 30 days are deleted. A
+  session's stored metadata (its project folder and transcript path
+  included) is deleted 30 days after the session's last activity.
 - **Tool categories.** Raw tool names (`Bash`, `exec_command`,
   `send_message`, `mcp__*`) collapse into categories so usage compares
   across agents.
@@ -145,22 +177,28 @@ is off, Headroom does no agent scanning at all.
   back to the menu bar.
 - The collapsed indicator shows memory only until disk gets tight: below 10%
   free a drive dot appears, and below 5% it turns red.
-- Optional Launch at Login through `SMAppService`. No Accessibility or Screen
-  Recording permission is needed. A duplicate-instance check keeps two
-  copies from competing for the notch.
+- Optional **Open at login** (Settings → General) through `SMAppService`.
+  No Accessibility or Screen Recording permission is needed. A
+  duplicate-instance check keeps two copies from competing for the notch.
 
 ## History
 
 - SQLite (the system library, in WAL mode) in
-  `~/Library/Application Support/org.headroom.app/`. One snapshot about every minute
-  while recording, plus extra samples when pressure changes. Samples and
-  events are kept for 30 days. Sleep and downtime gaps are excluded from
-  trends.
+  `~/Library/Application Support/org.headroom.app/`. One snapshot about
+  every minute while recording, plus extra samples when pressure changes.
+  Sleep and downtime gaps are excluded from trends.
+- **30-day retention.** Samples, events, hourly agent totals, and agent
+  session rows older than 30 days are pruned while recording and every
+  time the database is opened, which happens at every launch even when
+  recording is paused. Archives, the last consumer scan, and preferences
+  are not pruned: they stay until you delete them (or, for the scan, until
+  you scan again).
 - A `log.md` report (summary, daily readings, app footprints, disk
   consumers, recommendations, pressure transitions, and quit outcomes) is
   rewritten at most every 15 minutes, and immediately when you open it.
 - Pause or resume recording, archive and restart the baseline, and open or
-  reveal the data from the Trends window.
+  reveal the data from the Trends window. Archiving moves the database and
+  `log.md` into `Archives/<timestamp>-<id>/` and starts a fresh history.
 
 Recommendations are honest about uncertainty: footprint growth doesn't prove
 a leak, and partial readings are labeled as partial.
@@ -171,12 +209,21 @@ a leak, and partial readings are labeled as partial.
 ~/Library/Application Support/org.headroom.app/
 ├── history.sqlite     # samples, events, disk consumers, agent sessions (WAL)
 ├── log.md             # generated report
-├── quota-cache.json   # last Limits readings, for instant display on relaunch
-└── archive-*/         # archived baselines you chose to keep
+├── quota-cache.json   # last Limits readings; deleted when Limits is turned off
+└── Archives/
+    └── <timestamp>-<id>/   # an archived history.sqlite and log.md
 ```
 
 Preferences, including update settings, are stored in the
 `org.headroom.app` defaults domain.
+
+Builds up to 0.8.0 kept this data in
+`~/Library/Application Support/Headroom`. On first launch Headroom moves
+its own files from there: the database, `log.md`, `quota-cache.json`, and
+the `Archives` folder. It does so only if the `log.md` there was written by
+this app, because an unrelated app uses the same folder name. A move that
+was interrupted is finished on the next launch, and the move is skipped
+while another copy of Headroom is running.
 
 ## Resource cost
 
@@ -198,8 +245,9 @@ part of the UI at launch. These are useful for scripting and verification.
 | `--diagnose` | Prints live memory and disk readings and grouped app footprints, then exits |
 | `--capture` | Records one history sample and regenerates `log.md`, then exits |
 | `--report` | Regenerates `log.md` from existing history, then exits |
-| `--scan` | Runs the throttled consumer scan and prints the results, then exits |
+| `--scan` | Runs the throttled consumer scan, saves the results, regenerates `log.md`, prints the path of `log.md`, then exits |
 | `--history-dir` | Prints the data folder path, then exits |
+| `--check-for-updates` | Asks GitHub's public releases API, anonymously, for this project's releases and prints the newest stable release tag, then exits. Nothing else in the app uses that endpoint; update checks themselves read the signed feed |
 | `--show-panel` | Opens the panel right after launch |
 | `--show-trends` | Opens the Trends window right after launch |
 | `--screenshots [folder]` | Exports labeled screenshots with isolated demo data, without live monitoring |

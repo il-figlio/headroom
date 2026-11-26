@@ -32,8 +32,7 @@ the only step that can't be undone.
 moved to `.internal/`. Live-machine screenshots and icon concepts were
 removed; the README screenshots come from `--screenshots`, which renders the
 real views with labeled demo data. MIT license; Sparkle's license ships in
-the app bundle. A leftover work-in-progress branch on the remote must be
-deleted before the flip (see section 4).
+the app bundle. The public repository has one branch, `main`.
 
 ## 2. Documentation set
 
@@ -97,14 +96,16 @@ Read the code, not the old docs. For each item, record the answer in
 - [ ] The update check: what it sends, and that any system profile is off.
 
 **Headroom:** no telemetry. History is local SQLite in
-`~/Library/Application Support/org.headroom.app/`, with samples and events kept 30
-days. Agents is off by default; when on, it reads transcripts read-only,
-keeps only metadata, and lists processes with `/usr/bin/ps`. Limits is
-opt-in on new installs; it reads existing Codex, Claude Code, and Ante
-sign-ins (including Claude Code's Keychain item, read without prompts and
-switchable off), calls the providers'
-unofficial usage endpoints, or runs `ante usage`. Sparkle checks daily with
-its system profile disabled.
+`~/Library/Application Support/org.headroom.app/`, with samples and events
+older than 30 days deleted. The disk consumer scan runs only when asked,
+and runs `tmutil` to count local snapshots. Agents is off by default; when
+on, it reads transcripts read-only, keeps only metadata, and lists
+processes with `/bin/ps`. Limits is opt-in on new installs; it reads
+existing Codex, Claude Code, and Ante sign-ins (including Claude Code's
+Keychain item, read without prompts and switchable off), calls the
+providers' unofficial usage endpoints, or runs `ante usage`. Sparkle checks
+daily with its system profile disabled, and a command-line diagnostic can
+ask GitHub's public releases API for the newest release.
 
 ## 4. History scan
 
@@ -136,13 +137,10 @@ a GitHub `noreply` address. Force-pushing an orphan branch in place is the
 fallback; GitHub can keep old commits reachable by SHA until its caches are
 purged, so a new repository is cleaner.
 
-**Headroom:** no real secrets in history; the test fixtures use obviously
-fake tokens. History does contain the Developer ID team ID (also visible in
-any signed binary), a Keychain investigation narrative, superseded
-credential-refresh code, screenshots captured on a real desktop, and two
-author email addresses. A work-in-progress branch on the remote holds
-unrelated code and real network host names. Recommendation: publish a fresh
-history and delete that branch.
+**Headroom:** the scan found no real secrets, and the decision was to
+publish a fresh history: the public repository starts from a new initial
+commit of the cleaned tree, and the earlier history is kept in a separate
+private archive.
 
 ## 5. Versioning from a single source
 
@@ -152,9 +150,9 @@ history and delete that branch.
 - [ ] Tags are `vX.Y.Z` and match the marketing version.
 - [ ] The changelog's **Unreleased** section becomes the release notes.
 
-**Headroom:** today the version and build number are set in
-`scripts/build.sh`. The release pipeline work moves them to a single
-source that the build, release script, and tag check share.
+**Headroom:** the marketing version and build number live in `VERSION`.
+`scripts/build.sh`, `scripts/release.py`, the appcast, the cask, and the
+`v<version>` tag all read it.
 
 ## 6. Signed and notarized artifacts
 
@@ -169,8 +167,9 @@ source that the build, release script, and tag check share.
       distribution.
 
 **Headroom:** universal, Developer ID signed with hardened runtime, and
-notarized. Source builds sign with a self-signed "Headroom Local" identity
-kept in its own keychain. See [releases.md](releases.md).
+notarized. The download is a DMG; a ZIP of the same app is the update
+archive. Source builds sign with a self-signed "Headroom Local" identity
+kept in its own keychain file. See [releases.md](releases.md).
 
 ## 7. Public update feed
 
@@ -186,30 +185,39 @@ kept in its own keychain. See [releases.md](releases.md).
 
 **Headroom:** Sparkle 2, pinned. Signed feed required, archive verification
 before extraction, system profile off, remote release notes off. Builds up
-to 0.8.0 read a private feed through the GitHub CLI login; the public
-release replaces that with an unauthenticated feed.
+to 0.8.0 read a private feed through the GitHub CLI login and can't update
+themselves; installing the first public DMG once moves them to the
+unauthenticated public feed.
 
 ## 8. Local verification and release (no hosted CI)
 
-No GitHub Actions. Hosted CI costs minutes of queueing and setup per run
-(see usejog/joggernaut's findings), and macOS signing would need private
-keys on GitHub. `ante-ci-bot`'s native checks cover Linux projects; until it
-has a Mac worker, Mac apps verify and release on the release Mac.
+No GitHub Actions and no other hosted CI. A hosted run spends minutes on
+queueing and setup before it checks anything, and signing a macOS app there
+would mean storing private keys on GitHub. The app is verified and released
+on the release Mac instead.
 
-- [ ] One script runs every check: `scripts/verify.sh` (all tests, universal
-      build, release dry run), printing each step's wall time. No skips, no
-      retries; fix flaky tests instead.
+- [ ] One script runs every automated check: `scripts/verify.sh` (all
+      tests, universal build, release dry run), printing each step's wall
+      time. No skips, no retries; fix flaky tests instead. The tests must
+      run with the tools the release Mac has.
+- [ ] Checks that need a logged-in GUI session are listed separately as
+      manual checks, not silently left out of the script.
 - [ ] Run it before every push to `main` and before every tag.
 - [ ] Actions disabled in the repository settings, and no `.github/workflows/`.
 - [ ] Signing material stays in the release Mac's login Keychain (Developer ID
       certificate, notarytool profile, Sparkle key), backed up in a password
       manager. Nothing is stored as a GitHub secret.
 - [ ] The release script refuses to overwrite a published release, and the
-      appcast is committed only after the release assets exist.
+      appcast is committed only after the release assets exist and the
+      published archive has been downloaded and checked against it.
+- [ ] The release tag is a signed annotated tag, pushed before the release
+      is created, so the host never creates an unsigned tag for it.
 
-**Headroom:** `./scripts/verify.sh` passes in about 61 s on this Mac (checks
-4 s, universal build 35 s, dry run 21 s); the hosted run it replaced took
-about 4 min. Releases: `docs/releases.md`.
+**Headroom:** `./scripts/verify.sh` runs the one Swift Testing target, a
+universal ad-hoc build, and an offline release dry run in a few minutes,
+most of it the build, with only the Command Line Tools installed.
+`scripts/test-quit.sh` is the manual check: it launches a fixture app and a
+Headroom binary. Releases: [releases.md](releases.md).
 
 ## 9. Homebrew cask
 
@@ -218,21 +226,26 @@ about 4 min. Releases: `docs/releases.md`.
       declares the minimum macOS version, and uses `auto_updates true` when
       the app updates itself.
 - [ ] A `zap` stanza lists the app's data folder and preferences.
+- [ ] If another cask installs an app at the same path, the cask declares
+      it with `conflicts_with`.
 - [ ] A documented release step bumps the cask (`scripts/render-cask.py`).
 - [ ] Mark the README's Homebrew line "coming soon" until the tap works.
 
 **Headroom:** `brew install --cask il-figlio/tap/headroom`, marked coming
-soon in the README. The `zap` stanza should remove
+soon in the README. The `zap` stanza removes
 `~/Library/Application Support/org.headroom.app` and the `org.headroom.app`
-preferences.
+preferences, caches, and saved state. The official `headroom` cask is a
+different app that also installs `/Applications/Headroom.app`, so the cask
+declares `conflicts_with cask: "headroom"`.
 
 ## 10. Clean-machine QA
 
 Test on a Mac (or a fresh macOS user account) that has never run the app or
 its development builds.
 
-- [ ] Download from the Releases page in a browser, unzip, and open:
-      Gatekeeper accepts it without warnings.
+- [ ] Download from the Releases page in a browser, open the disk image,
+      drag the app to Applications, and open it: Gatekeeper accepts it
+      without warnings.
 - [ ] First launch: onboarding appears, optional features are off, and no
       Keychain, network, or permission prompts appear unexpectedly.
 - [ ] Every main feature works with no developer tools installed.
@@ -258,5 +271,6 @@ first public build to the next.
       offers private reporting.
 - [ ] Announce only after the signed-out checks pass.
 
-**Headroom:** the old private v0.8.0 draft release should be deleted, since
-it was built for the private update feed.
+**Headroom:** the public repository was created with a fresh history, so
+it has no releases from the private builds. Its only draft is the first
+public release, which is published once the checks above pass.

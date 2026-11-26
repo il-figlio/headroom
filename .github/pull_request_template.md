@@ -22,7 +22,7 @@ This change keeps all of these (see CONTRIBUTING.md):
 
 - [ ] Never deletes user files
 - [ ] Never quits apps automatically; Force Quit still asks first
-- [ ] No folder scans on a timer
+- [ ] No folder scans unless the user starts one
 - [ ] No telemetry, no new network destinations, no new dependencies
 - [ ] Provider credentials stay read-only, no tokens persisted, no Keychain prompts
 - [ ] Agents and Limits do nothing while they're turned off
