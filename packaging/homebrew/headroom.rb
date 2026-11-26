@@ -16,6 +16,9 @@ cask "@CASK_TOKEN@" do
   end
 
   auto_updates true
+  # The official "headroom" cask is a different app that also installs
+  # /Applications/Headroom.app, so the two can't be installed side by side.
+  conflicts_with cask: "headroom"
   depends_on macos: ">= :ventura"
 
   app "@APP_NAME@.app"
