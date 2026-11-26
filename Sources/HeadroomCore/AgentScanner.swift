@@ -107,9 +107,15 @@ public final class AgentScanner {
     /// state between scans (persisted via HistoryStore); `processes` defaults
     /// to a live `ps` read but is injectable for tests. Without `identities`
     /// a replaced file is only noticed once it is shorter than its offset.
+    /// `burn` is the hourly usage accumulated before this scan (the monitor's
+    /// 48 h window, reloaded from `agent_usage` after a relaunch): the
+    /// snapshot's "today" totals are that plus this scan's own usage, taken
+    /// over `calendar`'s day around `now`.
     public func scan(now: Date = Date(), previousSessions: [AgentSession] = [],
                      offsets: [String: Int64] = [:],
                      identities: [String: AgentFileID] = [:],
+                     burn previousBurn: [HourBurn] = [],
+                     calendar: Calendar = .current,
                      processes: [AgentProcess]? = nil) -> AgentScanResult {
         var roots = self.roots()
         // One discovery pass covers the generic root walks and every
@@ -310,17 +316,16 @@ public final class AgentScanner {
         snapshot.scannedAt = now
         snapshot.processCounts = pidsByKind.mapValues(\.count)
         snapshot.processListAvailable = listing != nil
-        for session in all where Calendar.current.isDateInToday(session.lastEventAt ?? .distantPast) {
-            snapshot.todayTokens += session.tokens
-            if let cost = session.costUSD { snapshot.todayCostUSD = (snapshot.todayCostUSD ?? 0) + cost }
-            snapshot.unpricedTokensToday += session.unpricedTokens
-        }
+        // "Today" comes from usage by its own event hour, not from the
+        // lifetime totals of sessions that happened to be active today.
+        let usage = burn.values.sorted { $0.hour < $1.hour }
+        snapshot.setToday(from: previousBurn + usage, now: now, calendar: calendar)
         // Drop state for files that no longer exist so the dicts stay bounded.
         let alive = Set(candidates.map(\.file.path))
         newOffsets = newOffsets.filter { alive.contains($0.key) || known.contains($0.key) }
         newIdentities = newIdentities.filter { newOffsets[$0.key] != nil }
         return AgentScanResult(snapshot: snapshot, sessions: persisted, offsets: newOffsets,
-                               identities: newIdentities, usage: burn.values.sorted { $0.hour < $1.hour })
+                               identities: newIdentities, usage: usage)
     }
 
     /// Epoch-truncated hour — deterministic across timezones and identical

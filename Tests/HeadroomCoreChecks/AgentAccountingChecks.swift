@@ -2,10 +2,16 @@ import Foundation
 import Testing
 @testable import HeadroomCore
 
-/// What counts as a token: Codex and Claude Code usage shapes and duplicate
-/// responses. Synthetic transcripts in throwaway temp directories only.
+/// What counts as a token and as "today": Codex and Claude Code usage shapes,
+/// duplicate responses and day totals from hourly burn. Synthetic transcripts
+/// in throwaway temp directories only.
 @Suite struct AgentAccountingChecks {
     let now = Date(timeIntervalSince1970: 1_795_521_600) // 2026-11-24T12:00:00Z
+    var utc: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }
 
     func tempDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("headroom-agent-accounting-\(UUID().uuidString)")
@@ -294,5 +300,83 @@ import Testing
         for index in 0..<1000 { _ = count(&ledger, "m\(index)") }
         #expect(ledger.count == 2)
         #expect(count(&ledger, "m999") == 0)
+    }
+
+    // MARK: Today
+
+    /// A long-lived session's earlier days are not "today": only usage whose
+    /// own time falls in the calendar day counts.
+    @Test func todayCountsOnlyUsageFromToday() throws {
+        let root = try tempDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (scanner, project) = try claudeHome(root)
+        try (claudeLine(id: "msg_1", request: "req_1", at: now.addingTimeInterval(-3 * 86400), input: 1_000_000, output: 0)
+            + claudeLine(id: "msg_2", request: "req_2", at: now.addingTimeInterval(-4 * 3600), input: 5, output: 0)).write(to: project.appendingPathComponent("s.jsonl"))
+        let result = scanner.scan(now: now, calendar: utc, processes: [])
+        #expect(result.sessions.first?.tokens.total == 1_000_005)
+        #expect(result.snapshot.todayTokens == 5)
+        // 5 input tokens on claude-sonnet-4-5, not the session's $3.
+        #expect(abs((result.snapshot.todayCostUSD ?? -1) - 0.000015) < 1e-12)
+        #expect(result.snapshot.unpricedTokensToday == 0)
+    }
+
+    /// After a relaunch nothing is re-read, so today's totals come from the
+    /// hourly usage saved in the store.
+    @Test func todaySurvivesARelaunch() throws {
+        let root = try tempDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let history = try tempDirectory(); defer { try? FileManager.default.removeItem(at: history) }
+        // Real clock: the store ages agent_usage rows by it.
+        let now = Date()
+        let project = try claudeHome(root).project
+        try (claudeLine(id: "msg_1", request: "req_1", at: now.addingTimeInterval(-3 * 86400), input: 1_000_000, output: 0)
+            + claudeLine(id: "msg_2", request: "req_2", at: now, input: 5, output: 0)).write(to: project.appendingPathComponent("s.jsonl"))
+        let first = try claudeHome(root).scanner.scan(now: now, calendar: utc, processes: [])
+        #expect(first.snapshot.todayTokens == 5)
+        try HistoryStore(directory: history).commitAgentScan(sessions: first.sessions, offsets: first.offsets,
+                                                             identities: first.identities, usage: first.usage)
+
+        let store = try HistoryStore(directory: history)
+        let burn = try store.loadAgentUsage(since: now.addingTimeInterval(-48 * 3600))
+        let second = try claudeHome(root).scanner.scan(now: now, previousSessions: try store.loadAgentSessions(),
+                                                       offsets: try store.loadScanOffsets(), identities: try store.loadScanIdentities(),
+                                                       burn: burn, calendar: utc, processes: [])
+        #expect(second.usage.isEmpty)
+        #expect(second.sessions.first?.tokens.total == 1_000_005)
+        #expect(second.snapshot.todayTokens == 5)
+        #expect(abs((second.snapshot.todayCostUSD ?? -1) - 0.000015) < 1e-12)
+    }
+
+    @Test func todayIsTheLocalCalendarDayOfHourlyBurn() {
+        func bucket(_ hoursFromNow: Double, _ kind: AgentKind, tokens: Int64, cost: Double? = nil) -> HourBurn {
+            var burn = HourBurn(hour: AgentScanner.hourBucket(now.addingTimeInterval(hoursFromNow * 3600)))
+            burn.tokens[kind] = tokens
+            if let cost { burn.cost[kind] = cost }
+            return burn
+        }
+        // `now` is 12:00 UTC: midnight is 12 hours back, tomorrow 12 ahead.
+        let burn = [bucket(-13, .claude, tokens: 1000, cost: 1), bucket(-12, .claude, tokens: 100, cost: 0.5),
+                    bucket(-1, .codex, tokens: 40), bucket(-1, .claude, tokens: 7),
+                    // The same hour twice (saved burn plus this scan's): summed.
+                    bucket(0, .claude, tokens: 20), bucket(0, .claude, tokens: 3, cost: 0.25),
+                    bucket(12, .claude, tokens: 5000, cost: 9)]
+        var snapshot = AgentSnapshot()
+        snapshot.setToday(from: burn, now: now, calendar: utc)
+        #expect(snapshot.todayTokens == 170)
+        #expect(snapshot.todayCostUSD == 0.75)
+        // Hours in which a kind had no priced usage at all: Codex's 40 and
+        // Claude's 7. The 20 share an hour with priced usage, so they aren't
+        // known to be unpriced — the figure is a lower bound.
+        #expect(snapshot.unpricedTokensToday == 47)
+
+        // UTC+5:30: midnight was 18:30 UTC, mid-bucket. The 18:00 bucket
+        // straddles it and stays with yesterday; 19:00 is today.
+        var kolkata = Calendar(identifier: .gregorian)
+        kolkata.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        snapshot.setToday(from: [bucket(-18, .claude, tokens: 900, cost: 1), bucket(-17, .claude, tokens: 60, cost: 1)], now: now, calendar: kolkata)
+        #expect(snapshot.todayTokens == 60)
+
+        snapshot.setToday(from: [], now: now, calendar: utc)
+        #expect(snapshot.todayTokens == 0)
+        #expect(snapshot.todayCostUSD == nil)
+        #expect(snapshot.unpricedTokensToday == 0)
     }
 }

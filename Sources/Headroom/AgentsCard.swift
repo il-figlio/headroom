@@ -62,8 +62,10 @@ struct AgentsCard: View {
     }
     private var running: [AgentSession] { agents.live }
     private var lastActivity: Date? { agents.sessions.compactMap(\.lastEventAt).max() }
+    /// Today is the local calendar day, counted from usage by the hour it
+    /// happened in, not from the lifetime totals of today's sessions.
     private var costToday: String {
-        agents.todayCostUSD.map { "~" + TokenFormat.usd($0) + " today" } ?? "\(TokenFormat.compact(agents.todayTokens.total)) tokens today"
+        agents.todayCostUSD.map { "~" + TokenFormat.usd($0) + " today" } ?? "\(TokenFormat.compact(agents.todayTokens)) tokens today"
     }
     /// Summed process-tree footprint over distinct processes (sessions
     /// sharing a pid count once); "≥" when some aren't measured yet.
@@ -157,20 +159,20 @@ struct AgentsCard: View {
 
     private func idleLine(now: Date) -> String {
         var parts = [agents.processListAvailable ? "Nothing running" : "Can't read the process list",
-                     "\(TokenFormat.compact(agents.todayTokens.total)) tokens"]
+                     "\(TokenFormat.compact(agents.todayTokens)) tokens"]
         if let cost = agents.todayCostUSD { parts.append("~" + TokenFormat.usd(cost) + " today") }
         if let lastActivity { parts.append("last active " + AgentTime.ago(lastActivity, now: now)) }
         return parts.joined(separator: " · ")
     }
 
     private var todayLines: [String] {
-        var lines = ["\(agents.todayTokens.total.formatted()) tokens across \(agents.byKindToday.values.reduce(0, +)) sessions"]
+        var lines = ["\(agents.todayTokens.formatted()) tokens across \(agents.byKindToday.values.reduce(0, +)) sessions"]
         if let cost = agents.todayCostUSD {
             lines.append("~\(TokenFormat.usd(cost)) estimated from per-model list prices; providers may bill differently.")
         } else {
             lines.append("Today's models can't be priced, so no dollar estimate is shown.")
         }
-        if agents.unpricedTokensToday > 0 { lines.append("+\(TokenFormat.compact(agents.unpricedTokensToday)) unpriced tokens") }
+        if agents.unpricedTokensToday > 0 { lines.append("At least \(TokenFormat.compact(agents.unpricedTokensToday)) tokens have no known price and aren't in the estimate.") }
         if let footprintText { lines.append("\(footprintText) live memory across running sessions' process trees") }
         if !agents.processListAvailable { lines.append("The process list couldn't be read, so running sessions and their memory are unknown.") }
         return lines

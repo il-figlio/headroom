@@ -80,7 +80,9 @@ final class MemoryMonitor: ObservableObject {
     @Published var alertVisible = false
     @Published private(set) var trends = TrendSummary()
     @Published private(set) var consumers = ConsumerScan()
-    /// Detected coding-agent sessions and today's token totals.
+    /// Detected coding-agent sessions and today's token totals. "Today" is
+    /// the scan's reading of hourly burn (`agentBurnBuckets` plus the scan's
+    /// own usage), so it survives a relaunch with history on.
     @Published private(set) var agents = AgentSnapshot()
     /// Hourly token/cost burn per agent family over the trailing 48h,
     /// ascending by hour. Hours with no usage are omitted — the chart
@@ -424,7 +426,8 @@ final class MemoryMonitor: ObservableObject {
         defer { SamplingTrace.end(trace) }
         lastAgentScanAt = now
         let loadError = loadAgentStateIfNeeded(now: now)
-        let scan = agentScanner.scan(now: now, previousSessions: agentSessions, offsets: agentOffsets, identities: agentIdentities)
+        let scan = agentScanner.scan(now: now, previousSessions: agentSessions, offsets: agentOffsets,
+                                     identities: agentIdentities, burn: agentBurnBuckets)
         lastAgentSnapshot = scan.snapshot
         if historyEnabled, loadError == nil, let store = historyStore {
             do {

@@ -52,12 +52,12 @@ struct AgentsSection: View {
                     // No process list and nothing writing: unknown, not zero.
                     stat("Active now", agents.processListAvailable || !agents.live.isEmpty ? "\(agents.live.count)" : "—")
                     stat("Sessions today", "\(sessionsToday)")
-                    stat("Tokens today", TokenFormat.compact(agents.todayTokens.total))
+                    stat("Tokens today", TokenFormat.compact(agents.todayTokens))
                     stat("Est. cost", agents.todayCostUSD.map { "~" + TokenFormat.usd($0) } ?? "—")
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
                     .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.04)))
                 if agents.unpricedTokensToday > 0 {
-                    Text("+\(TokenFormat.compact(agents.unpricedTokensToday)) unpriced tokens today — the estimate only covers models with known prices.")
+                    Text("At least \(TokenFormat.compact(agents.unpricedTokensToday)) of today's tokens have no known price — the estimate only covers models with known prices.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if !agents.processListAvailable {

@@ -148,9 +148,14 @@ public struct AgentRoot: Identifiable, Sendable {
 public struct AgentSnapshot: Sendable {
     public var sessions: [AgentSession] = []
     public var roots: [AgentRoot] = []
-    public var todayTokens = TokenUsage()
-    /// Sum over priced models only.
+    /// Tokens whose own event time falls in the local calendar day, summed
+    /// from hourly burn (see `setToday`), not from session lifetime totals.
+    public var todayTokens: Int64 = 0
+    /// Sum over priced models only; nil when nothing today could be priced.
     public var todayCostUSD: Double?
+    /// A lower bound on today's tokens that `todayCostUSD` leaves out: hourly
+    /// burn keeps tokens and cost per agent kind, not per model, so only an
+    /// hour in which a kind had no priced usage at all is known to be unpriced.
     public var unpricedTokensToday: Int64 = 0
     public var scannedAt: Date?
     /// Agent processes `ps` showed per kind at scan time. Empty when unknown
@@ -197,6 +202,34 @@ public struct AgentSnapshot: Sendable {
             counts[s.kind, default: 0] += 1
         }
         return counts
+    }
+
+    /// Sets today's totals from hourly burn: every bucket that starts within
+    /// `now`'s local calendar day. Buckets are epoch-hour aligned, so in a
+    /// time zone offset by 30 or 45 minutes the hour straddling midnight
+    /// belongs to yesterday and the first part-hour of the day isn't counted
+    /// until the next bucket. Buckets sharing an hour are summed first.
+    mutating func setToday(from burn: [HourBurn], now: Date, calendar: Calendar = .current) {
+        let start = calendar.startOfDay(for: now)
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86400)
+        var hours: [Date: HourBurn] = [:]
+        for bucket in burn where bucket.hour >= start && bucket.hour < end {
+            var merged = hours[bucket.hour] ?? HourBurn(hour: bucket.hour)
+            for (kind, tokens) in bucket.tokens { merged.tokens[kind, default: 0] += tokens }
+            for (kind, cost) in bucket.cost { merged.cost[kind, default: 0] += cost }
+            hours[bucket.hour] = merged
+        }
+        var tokens: Int64 = 0, unpriced: Int64 = 0, cost = 0.0
+        for bucket in hours.values {
+            cost += bucket.cost.values.reduce(0, +)
+            for (kind, count) in bucket.tokens where count > 0 {
+                tokens += count
+                if (bucket.cost[kind] ?? 0) <= 0 { unpriced += count }
+            }
+        }
+        todayTokens = tokens
+        todayCostUSD = cost > 0 ? cost : nil
+        unpricedTokensToday = unpriced
     }
 }
 

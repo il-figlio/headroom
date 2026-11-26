@@ -122,7 +122,7 @@ public struct ScreenshotFixtures {
         ]
         snapshot.roots = [AgentRoot(kind: .claude, path: "/Users/demo/.claude", exists: true, sessionFiles: 42),
                           AgentRoot(kind: .codex, path: "/Users/demo/.codex", exists: true, sessionFiles: 17)]
-        snapshot.todayTokens = snapshot.sessions.reduce(into: TokenUsage()) { $0 += $1.tokens }
+        snapshot.todayTokens = snapshot.sessions.reduce(0) { $0 + $1.tokens.total }
         snapshot.todayCostUSD = 12.39; snapshot.unpricedTokensToday = 1_204_000
         snapshot.scannedAt = now
         agents = snapshot
