@@ -24,17 +24,42 @@ enum AgentLine {
         default: return nil
         }
     }
-    /// usage-ish dict → TokenUsage. Accepts the common key spellings.
+    /// usage-ish dict → TokenUsage. Accepts the common key spellings and
+    /// normalises them so the four fields never overlap (`total` adds them).
+    ///
+    /// Claude-shaped usage reports cache reads and writes apart from
+    /// `input_tokens`, so each field is taken as is. Codex-shaped usage
+    /// nests them: `cached_input_tokens` and `cache_write_input_tokens` are
+    /// parts of `input_tokens`, and `reasoning_output_tokens` is part of
+    /// `output_tokens`. Upstream codex-rs fills them from the Responses
+    /// API's `input_tokens_details` / `output_tokens_details`, and its
+    /// protocol.rs has `non_cached_input() = input_tokens -
+    /// cached_input_tokens` and `blended_total() = non_cached_input() +
+    /// output_tokens`. So under those key names the cached and cache-write
+    /// shares are moved out of input and reasoning tokens are not added
+    /// again; the total is then `input_tokens + output_tokens`.
     static func usage(_ d: [String: Any]) -> TokenUsage {
-        func v(_ keys: [String]) -> Int64 {
+        func v(_ keys: [String]) -> Int64? {
             for k in keys { if let n = d[k] as? NSNumber { return n.int64Value } }
-            return 0
+            return nil
         }
         var u = TokenUsage()
-        u.input = v(["input_tokens", "prompt_tokens", "input"])
-        u.output = v(["output_tokens", "completion_tokens", "output"]) + v(["reasoning_output_tokens"])
-        u.cacheRead = v(["cache_read_input_tokens", "cached_input_tokens", "cache_read"])
-        u.cacheWrite = v(["cache_creation_input_tokens", "cache_write_input_tokens", "cache_write"])
+        u.input = v(["input_tokens", "prompt_tokens", "input"]) ?? 0
+        u.output = v(["output_tokens", "completion_tokens", "output"]) ?? 0
+        var nested: Int64 = 0
+        if let read = v(["cache_read_input_tokens", "cache_read"]) {
+            u.cacheRead = read
+        } else if let cached = v(["cached_input_tokens"]) {
+            u.cacheRead = cached
+            nested += cached
+        }
+        if let write = v(["cache_creation_input_tokens", "cache_write"]) {
+            u.cacheWrite = write
+        } else if let written = v(["cache_write_input_tokens"]) {
+            u.cacheWrite = written
+            nested += written
+        }
+        u.input = max(0, u.input - nested)
         return u
     }
     static func touch(_ date: Date?, into session: inout AgentSession) {
@@ -78,11 +103,78 @@ func jsonlFiles(under root: String, depth: Int, nameHasPrefix prefix: String? = 
     return files
 }
 
+/// Remembers how much usage has been counted per API response, so a
+/// response that shows up on several transcript lines is counted once.
+/// Holds the most recent `limit` responses (oldest forgotten first), keyed by
+/// hashes rather than the ids themselves; in memory only, so a copy that
+/// arrives after a relaunch is counted again.
+struct MessageUsageLedger {
+    static let defaultLimit = 20_000
+    let limit: Int
+    /// One line that added usage: where it sits, and the running total for
+    /// its response once it was counted.
+    private struct Step {
+        var line: Int?
+        var total: TokenUsage
+    }
+    private var steps: [Int: [Step]] = [:]
+    /// Keys in first-seen order from `head` on, for eviction.
+    private var order: [Int] = []
+    private var head = 0
+
+    init(limit: Int = MessageUsageLedger.defaultLimit) { self.limit = max(1, limit) }
+
+    var count: Int { steps.count }
+
+    /// The part of `usage` not yet counted for this response; records it as
+    /// counted. A later line reporting more (a streaming snapshot) yields
+    /// only the increase. A line seen before at the same `file` and `offset`
+    /// is that line being read again, not a copy: the scanner re-reads bytes
+    /// whose scan could not be saved, and those must count in full again, so
+    /// everything counted from that line on is taken back first.
+    mutating func uncounted(_ usage: TokenUsage, message: String, request: String?,
+                            file: String, offset: Int64?) -> TokenUsage {
+        var hasher = Hasher()
+        hasher.combine(message); hasher.combine(request ?? "")
+        let key = hasher.finalize()
+        let line: Int? = offset.map {
+            var hasher = Hasher()
+            hasher.combine(file); hasher.combine($0)
+            return hasher.finalize()
+        }
+        var known = steps[key] ?? []
+        if let line, let index = known.firstIndex(where: { $0.line == line }) {
+            known.removeSubrange(index...)
+        }
+        let before = known.last?.total ?? TokenUsage()
+        let delta = usage.excess(over: before)
+        guard delta.total > 0 else {
+            if steps[key] != nil { steps[key] = known }
+            return delta
+        }
+        var total = before
+        total += delta
+        known.append(Step(line: line, total: total))
+        if steps.updateValue(known, forKey: key) == nil {
+            order.append(key)
+            if order.count - head > limit {
+                steps[order[head]] = nil
+                head += 1
+                if head > limit { order.removeFirst(head); head = 0 }
+            }
+        }
+        return delta
+    }
+}
+
 /// ~/.claude/projects/<escaped-path>/<session-uuid>.jsonl
 public final class ClaudeCodeProvider: AgentProvider {
     public let kind = AgentKind.claude
     public let roots: [String]
     private var byModel: [String: [String: TokenUsage]] = [:]
+    /// Shared by every transcript this provider parses, so a response copied
+    /// into another session's file is recognised too.
+    private var ledger = MessageUsageLedger()
     /// `root` is injectable so tests never read the real ~/.claude.
     public init(root: String = "~/.claude") { roots = [root] }
 
@@ -109,7 +201,20 @@ public final class ClaudeCodeProvider: AgentProvider {
         if let sid = AgentLine.string(obj, ["sessionId"]) { session.sessionId = sid }
         if let cwd = AgentLine.string(obj, ["cwd"]) { session.projectDir = cwd }
         guard let message = obj["message"] as? [String: Any] else { return true }
-        let usage = AgentLine.dict(message, ["usage"]).map(AgentLine.usage) ?? TokenUsage()
+        var usage = AgentLine.dict(message, ["usage"]).map(AgentLine.usage) ?? TokenUsage()
+        // Assumption, not checked against real transcripts (Headroom's
+        // development never opens them): Claude Code writes one JSONL line
+        // per content block of an assistant message, each repeating the same
+        // `message.id`, top-level `requestId` and `usage`, and a resumed or
+        // forked session copies earlier messages into its new file. That is
+        // the documented reason usage tools such as ccusage de-duplicate by
+        // message id + request id. Each response is therefore counted once:
+        // by both ids, by `message.id` alone when there is no `requestId`,
+        // and line by line as before when there is no `message.id`.
+        if usage.total > 0, let id = AgentLine.string(message, ["id"]) {
+            usage = ledger.uncounted(usage, message: id, request: AgentLine.string(obj, ["requestId"]),
+                                     file: session.filePath, offset: event.lineOffset)
+        }
         if usage.total > 0 { session.tokens += usage; event.tokens += usage }
         if let model = AgentLine.string(message, ["model"]) {
             session.models.insert(model)
@@ -121,7 +226,9 @@ public final class ClaudeCodeProvider: AgentProvider {
             byModel[session.filePath, default: [:]]["", default: TokenUsage()] += usage
         }
         // Subagent (sidechain) calls show up again on the parent side as Task
-        // tool uses — count their tokens but not their tool calls.
+        // tool uses — count their tokens but not their tool calls. Tool uses
+        // are counted on every line: lines sharing a message id carry
+        // different content blocks.
         if (obj["isSidechain"] as? Bool) != true,
            let content = message["content"] as? [[String: Any]] {
             for item in content where item["type"] as? String == "tool_use" {
@@ -143,7 +250,10 @@ extension ClaudeCodeProvider: ModelTokenTracking {
 /// ~/.codex/sessions/**/rollout-<ts>-<uuid>.jsonl plus archived_sessions.
 /// Codex emits both per-response deltas (`token_usage_record.usage`) and
 /// cumulative counters (`token_count.total_token_usage`); the cumulative
-/// form wins so resumed scans stay exact.
+/// form wins so resumed scans stay exact. Both go through
+/// `AgentLine.usage`, which takes cached and cache-write input out of input
+/// and leaves reasoning tokens inside output, so a session's total is
+/// Codex's own `input_tokens + output_tokens`.
 public final class CodexProvider: AgentProvider {
     public let kind = AgentKind.codex
     public let roots: [String]
@@ -199,14 +309,15 @@ public final class CodexProvider: AgentProvider {
                let total = AgentLine.dict(info, ["total_token_usage"]) {
                 let u = AgentLine.usage(total)
                 // Cumulative counter — attribute the jump over what we've seen
-                // so per-model tracking and tokens.total stay consistent.
+                // so per-model tracking and tokens.total stay consistent. Both
+                // sides are in normalised fields (uncached input, cached
+                // input, cache-write input, output), each of which only grows
+                // in a cumulative counter. A session saved by a build that still counted
+                // cached and reasoning tokens twice holds a larger total; it
+                // adds nothing until the real counter passes it, then takes
+                // the counter's values.
                 if u.total > session.tokens.total {
-                    var delta = TokenUsage()
-                    delta.input = max(0, u.input - session.tokens.input)
-                    delta.output = max(0, u.output - session.tokens.output)
-                    delta.cacheRead = max(0, u.cacheRead - session.tokens.cacheRead)
-                    delta.cacheWrite = max(0, u.cacheWrite - session.tokens.cacheWrite)
-                    addUsage(delta, to: &session, event: &event)
+                    addUsage(u.excess(over: session.tokens), to: &session, event: &event)
                     session.tokens = u
                 }
             }

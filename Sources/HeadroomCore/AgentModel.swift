@@ -34,6 +34,15 @@ public struct TokenUsage: Codable, Hashable, Sendable {
     public static func += (lhs: inout TokenUsage, rhs: TokenUsage) {
         lhs.input += rhs.input; lhs.output += rhs.output; lhs.cacheRead += rhs.cacheRead; lhs.cacheWrite += rhs.cacheWrite
     }
+    /// Field by field, how far `self` is above `other`; never negative.
+    public func excess(over other: TokenUsage) -> TokenUsage {
+        var delta = TokenUsage()
+        delta.input = max(0, input - other.input)
+        delta.output = max(0, output - other.output)
+        delta.cacheRead = max(0, cacheRead - other.cacheRead)
+        delta.cacheWrite = max(0, cacheWrite - other.cacheWrite)
+        return delta
+    }
 }
 
 /// Cross-agent tool grouping so "Bash" / "exec_command" / "run_terminal"
@@ -228,6 +237,11 @@ public struct AgentLineEvent: Sendable {
     public var tokens = TokenUsage()
     /// The model this line's tokens belong to, when directly attributable.
     public var model: String?
+    /// Input, not output: the scanner sets it before `parse` to the byte
+    /// offset of the line in its file, so a provider that de-duplicates can
+    /// tell the same line being read again (a retried scan) from a second
+    /// copy of the message elsewhere. Nil when a line is parsed on its own.
+    public var lineOffset: Int64?
     public init() {}
 }
 

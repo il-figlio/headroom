@@ -75,19 +75,23 @@ private final class FixtureProvider: AgentProvider, ModelTokenTracking {
         _ = provider.parse(line: line(#"{"timestamp":"\#(iso(now))","type":"response_item","payload":{"type":"function_call","name":"exec_command"}}"#), into: &session)
         _ = provider.parse(line: line(#"{"timestamp":"\#(iso(now))","type":"response_item","payload":{"type":"local_shell_call"}}"#), into: &session)
         _ = provider.parse(line: line(#"{"timestamp":"\#(iso(now))","type":"token_usage_record","payload":{"usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":5,"reasoning_output_tokens":2}}}"#), into: &session)
-        _ = provider.parse(line: line(#"{"timestamp":"\#(iso(now))","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":12,"cached_input_tokens":5}}}}"#), into: &session)
+        _ = provider.parse(line: line(#"{"timestamp":"\#(iso(now))","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":5,"reasoning_output_tokens":2}}}}"#), into: &session)
         #expect(session.sessionId == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
         #expect(session.projectDir == "/tmp/proj")
         #expect(session.models == ["gpt-9-turbo"])
         #expect(session.tools == ["exec_command": 1, "local_shell": 1])
-        // Per-response delta and the cumulative counter agree; tokens stay 100/12, not doubled.
-        #expect(session.tokens.input == 100)
-        #expect(session.tokens.output == 12)
+        // Codex counts cached input inside input_tokens and reasoning inside
+        // output_tokens: 95 fresh + 5 cached input, 10 output, 110 in all.
+        // The per-response delta and the cumulative counter agree, so the
+        // counter adds nothing.
+        #expect(session.tokens.input == 95)
+        #expect(session.tokens.output == 10)
         #expect(session.tokens.cacheRead == 5)
+        #expect(session.tokens.total == 110)
         // A later delta resumes accumulating over the cumulative value.
         _ = provider.parse(line: line(#"{"timestamp":"\#(iso(now))","type":"token_usage_record","payload":{"usage":{"input_tokens":50,"output_tokens":4}}}"#), into: &session)
-        #expect(session.tokens.input == 150)
-        #expect(session.tokens.output == 16)
+        #expect(session.tokens.input == 145)
+        #expect(session.tokens.output == 14)
     }
 
     @Test func genericFallbackAcceptsShapedLinesOnly() {

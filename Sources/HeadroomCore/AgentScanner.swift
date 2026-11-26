@@ -229,8 +229,9 @@ public final class AgentScanner {
             var modelTokens: [String: TokenUsage] = [:]
             var counted = false
             if cutoff != nil { _ = tracker?.takeModelTokens(file: path) }
-            for line in Self.splitLines(tail.data.prefix(consumed)) {
+            for (lineStart, line) in Self.splitLinesWithOffsets(tail.data.prefix(consumed)) {
                 var event = AgentLineEvent()
+                event.lineOffset = tail.base + Int64(lineStart)
                 if let cutoff {
                     // Parse into a copy and keep it only for a newer event,
                     // so a skipped line leaves no tokens, tools or models.
@@ -497,13 +498,18 @@ public final class AgentScanner {
     }
 
     static func splitLines(_ data: Data) -> [Data] {
-        var lines: [Data] = []
+        splitLinesWithOffsets(data).map(\.line)
+    }
+
+    /// Non-empty lines with the offset of each one's first byte within `data`.
+    static func splitLinesWithOffsets(_ data: Data) -> [(offset: Int, line: Data)] {
+        var lines: [(offset: Int, line: Data)] = []
         var start = data.startIndex
         while let newline = data[start...].firstIndex(of: 0x0A) {
-            if newline > start { lines.append(data.subdata(in: start..<newline)) }
+            if newline > start { lines.append((start - data.startIndex, data.subdata(in: start..<newline))) }
             start = data.index(after: newline)
         }
-        if start < data.endIndex { lines.append(data.subdata(in: start..<data.endIndex)) }
+        if start < data.endIndex { lines.append((start - data.startIndex, data.subdata(in: start..<data.endIndex))) }
         return lines
     }
 }
