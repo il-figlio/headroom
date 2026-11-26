@@ -7,16 +7,29 @@ import FoundationNetworking
 #endif
 
 /// URLSession used by all quota calls: ephemeral with no URL cache so bearer
-/// tokens never land in the shared cache, and a hard 30s ceiling so a wedged
-/// connection can't stall a refresh cycle.
+/// tokens never land in the shared cache, a hard 30s ceiling so a wedged
+/// connection can't stall a refresh cycle, and no redirects, so a request's
+/// headers reach only the host it was addressed to.
 enum QuotaHTTP {
     typealias Get = @Sendable (URL, [String: String]) async throws -> (Data, HTTPURLResponse)
+
+    /// Refuses every redirect: the task then finishes with the 3xx response
+    /// itself, which callers report like any other unexpected status.
+    /// URLSession would otherwise re-send custom headers (the Codex account
+    /// id among them) to wherever the redirect points.
+    final class NoRedirects: NSObject, URLSessionTaskDelegate {
+        func urlSession(_ session: URLSession, task: URLSessionTask,
+                        willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
+                        completionHandler: @escaping (URLRequest?) -> Void) {
+            completionHandler(nil)
+        }
+    }
 
     static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
         config.timeoutIntervalForResource = 30
-        return URLSession(configuration: config)
+        return URLSession(configuration: config, delegate: NoRedirects(), delegateQueue: nil)
     }()
 
     static func get(_ url: URL, headers: [String: String]) async throws -> (Data, HTTPURLResponse) {

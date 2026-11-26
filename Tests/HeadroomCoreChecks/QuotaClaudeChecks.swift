@@ -258,6 +258,16 @@ private func source(_ keychain: FakeKeychain, allowed: Bool = true, http: FakeHT
     #expect(reading.windows.map(\.label) == ["Week"])
 }
 
+/// The real session refuses redirects, so a 3xx reaches the source as-is.
+@Test func redirectStatusIsReportedNotFollowed() async {
+    let home = Home(); defer { home.remove() }
+    home.write(ClaudeQuotaSource.claudeFile, validFile)
+    let http = FakeHTTP { _ in (302, "") }
+    let reading = await source(FakeKeychain(), allowed: false, http: http).fetch(home: home.url)
+    #expect(reading.error == "Claude usage API returned HTTP 302")
+    #expect(http.requests.count == 1)
+}
+
 // MARK: - Keychain query shape (fake SecItemCopyMatching)
 
 @Test func keychainQueriesNeverAllowUI() {

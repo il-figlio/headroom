@@ -175,4 +175,53 @@ private let goodBody = """
         let reading = await CodexQuotaSource(http: http.get).fetch(home: home)
         #expect(reading.error?.hasPrefix("Network error: ") == true)
     }
+
+    /// The real session refuses redirects, so a 3xx reaches the source as-is.
+    @Test func redirectStatusIsReportedNotFollowed() async {
+        signIn(); defer { cleanUp() }
+        let http = FakeCodexHTTP(302, "")
+        let reading = await CodexQuotaSource(http: http.get).fetch(home: home)
+        #expect(reading.error == "Codex usage API returned HTTP 302")
+        #expect(http.requests.count == 1)
+    }
+}
+
+/// The shared session's own behaviour, checked without sending anything.
+@Suite struct QuotaHTTPChecks {
+    @Test func sessionKeepsNoCache() {
+        let configuration = QuotaHTTP.session.configuration
+        #expect(configuration.urlCache == nil)
+        #expect(configuration.timeoutIntervalForResource == 30)
+    }
+
+    /// Calls the delegate method URLSession calls on a 3xx: the answer must
+    /// be "no new request", whatever the redirect carries.
+    @Test func sessionRefusesEveryRedirect() throws {
+        let delegate = try #require(QuotaHTTP.session.delegate as? QuotaHTTP.NoRedirects)
+        // URLSession finds the method by this selector; a near-miss signature would never be called.
+        #expect(delegate.responds(to: #selector(URLSessionTaskDelegate.urlSession(_:task:willPerformHTTPRedirection:newRequest:completionHandler:))))
+        let asked = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+        // Created but never resumed, so nothing is sent.
+        let task = QuotaHTTP.session.dataTask(with: asked)
+        defer { task.cancel() }
+
+        for (status, target) in [(302, "https://elsewhere.example/usage"), (307, "https://chatgpt.com/other"), (301, "http://chatgpt.com/backend-api/wham/usage")] {
+            var follow = URLRequest(url: URL(string: target)!)
+            follow.setValue("acct-fake", forHTTPHeaderField: "ChatGPT-Account-Id")
+            let response = try #require(HTTPURLResponse(url: asked, statusCode: status, httpVersion: nil, headerFields: ["Location": target]))
+            let answers = Answers()
+            delegate.urlSession(QuotaHTTP.session, task: task, willPerformHTTPRedirection: response, newRequest: follow) {
+                answers.add($0)
+            }
+            #expect(answers.all.count == 1, "\(status)")
+            #expect(answers.all.first == .some(nil), "\(status) → \(target) must not be followed")
+        }
+    }
+}
+
+private final class Answers: @unchecked Sendable {
+    private let lock = NSLock()
+    private var answers: [URLRequest?] = []
+    var all: [URLRequest?] { lock.lock(); defer { lock.unlock() }; return answers }
+    func add(_ request: URLRequest?) { lock.lock(); answers.append(request); lock.unlock() }
 }
