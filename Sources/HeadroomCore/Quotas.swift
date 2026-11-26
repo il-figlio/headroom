@@ -46,8 +46,10 @@ public enum QuotaPolicy {
     /// A reading older than this is labeled with its last successful fetch time.
     public static let staleAfter: TimeInterval = 2 * interval
     /// Whether to start a poll. With Limits off nothing quota-related runs:
-    /// no credential checks, no CLI, no network. A clock that moved
-    /// backwards counts as due.
+    /// no credential checks (Settings doesn't look for sign-ins either), no
+    /// CLI, no network, and nothing from earlier polls is kept (see
+    /// `QuotaSources.forgetCredentials` and `QuotaCache.remove`). A clock
+    /// that moved backwards counts as due.
     public static func shouldPoll(enabled: Bool, inFlight: Bool, lastPollAt: Date, now: Date) -> Bool {
         guard enabled, !inFlight else { return false }
         let elapsed = now.timeIntervalSince(lastPollAt)
@@ -69,12 +71,17 @@ public protocol QuotaSource: Sendable {
     /// Fetch a fresh reading. Implementations must return a reading even on
     /// failure (provider set, `error` describing what went wrong).
     func fetch(home: URL) async -> QuotaReading
+    /// Drops everything the source keeps in memory between polls: a cached
+    /// token, the last good reading, a Retry-After gate. The default does
+    /// nothing, for sources that keep nothing.
+    func forget()
 }
 
 public extension QuotaSource {
     func hasCredentials(home: URL) -> Bool {
         credentialPaths.contains { FileManager.default.fileExists(atPath: home.appendingPathComponent($0).path) }
     }
+    func forget() {}
 }
 
 /// All quota sources, in display order. A source only participates when its
@@ -123,7 +130,8 @@ public enum QuotaSources {
     }
 
     /// Built from file existence, file names and Keychain item existence;
-    /// no file is opened and no secret is read.
+    /// no file is opened and no secret is read. Settings calls this only
+    /// while Limits is on.
     public static func detect(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Detected {
         detect(home: home, from: shared)
     }
@@ -163,6 +171,20 @@ public enum QuotaSources {
     /// credential failure (metadata only; free when nothing failed).
     public static func claudeSignInChanged(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
         shared.contains { ($0 as? ClaudeQuotaSource)?.noteSignInChange(home: home) == true }
+    }
+
+    /// Limits was turned off: drops what the shared sources and the Ante
+    /// poller hold in memory (the cached Claude token, last good readings,
+    /// Retry-After gates), so nothing from a sign-in outlives the switch.
+    /// A poll still in flight can put some of it back; call this again
+    /// once that poll has landed.
+    public static func forgetCredentials() async {
+        await forgetCredentials(in: shared, poller: .shared)
+    }
+
+    static func forgetCredentials(in sources: [any QuotaSource], poller: AntePoller) async {
+        for source in sources { source.forget() }
+        await poller.forget()
     }
 
     /// Replaces the Claude Code reading's stale error while a retry runs.
@@ -238,7 +260,8 @@ public enum QuotaMerge {
 }
 
 /// On-disk copy of the last readings (Monitor keeps it in Application Support)
-/// for instant display after relaunch.
+/// for instant display after relaunch. It holds plan names, account names
+/// and usage, never a token, and is deleted when Limits is turned off.
 public enum QuotaCache {
     public static func load(_ url: URL) -> [QuotaReading] {
         guard let data = try? Data(contentsOf: url),
@@ -253,5 +276,10 @@ public enum QuotaCache {
         guard let data = try? JSONEncoder().encode(merged) else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: url, options: .atomic)
+    }
+
+    /// Deletes the cache file (Limits was turned off). A missing file is fine.
+    public static func remove(_ url: URL) {
+        try? FileManager.default.removeItem(at: url)
     }
 }

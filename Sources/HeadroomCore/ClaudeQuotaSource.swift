@@ -134,6 +134,20 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
         return true
     }
 
+    /// Limits was turned off: drops the cached token, what was remembered
+    /// about the sign-in, the last good reading and any Retry-After gate.
+    /// A fetch already in flight can put some of it back, so the caller
+    /// forgets again once that fetch has landed.
+    public func forget() {
+        lock.lock()
+        cachedCredentials = nil
+        cachedStamp = nil
+        failureStamp = nil
+        retryPending = false
+        lock.unlock()
+        state.forget()
+    }
+
     // MARK: Credentials
 
     /// A usable file token first; else Claude Code's Keychain item, read with

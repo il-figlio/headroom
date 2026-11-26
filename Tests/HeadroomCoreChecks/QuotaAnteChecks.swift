@@ -136,6 +136,35 @@ private func fetch(_ home: FakeHome, _ poller: AntePoller) async -> [QuotaReadin
     #expect(reading?.error == "Claude usage is unavailable in Ante. Check `ante usage anthropic/personal`.")
 }
 
+private final class ForgetSpy: QuotaSource, @unchecked Sendable {
+    let provider: AgentKind = .codex
+    let credentialPaths: [String] = []
+    private let lock = NSLock()
+    private var count = 0
+    var forgotten: Int { lock.lock(); defer { lock.unlock() }; return count }
+    func fetch(home: URL) async -> QuotaReading { QuotaReading(provider: .codex) }
+    func forget() { lock.lock(); count += 1; lock.unlock() }
+}
+
+/// Limits turned off: nothing from an earlier run is reused or replayed.
+@Test func forgettingCoversEverySourceAndTheAntePoller() async throws {
+    let home = FakeHome(); defer { home.remove() }
+    home.account("personal"); home.ante(okScript)
+    let poller = AntePoller(reuseFloor: 60, limits: .init(timeout: 5))
+    #expect(await fetch(home, poller).first?.windows.count == 3)
+    #expect(await fetch(home, poller).first?.windows.count == 3)
+    #expect(home.invocations == 1, "reused within the floor")
+
+    let spies = [ForgetSpy(), ForgetSpy()]
+    await QuotaSources.forgetCredentials(in: spies, poller: poller)
+    #expect(spies.map(\.forgotten) == [1, 1])
+
+    home.ante(failScript)
+    let after = try #require(await fetch(home, poller).first)
+    #expect(home.invocations == 2, "the remembered reading wasn't reused")
+    #expect(after.windows.isEmpty && after.plan == nil && after.error == "Ante could not read Claude usage")
+}
+
 private struct InstantSource: QuotaSource {
     let provider: AgentKind = .codex
     let credentialPaths: [String] = []

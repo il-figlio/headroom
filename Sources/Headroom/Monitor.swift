@@ -252,10 +252,15 @@ final class MemoryMonitor: ObservableObject {
         sample()
     }
     /// Limits turned on: show the cache and poll on the next sample. Off:
-    /// clear the card; an in-flight poll's result is discarded on landing.
+    /// clear the card, forget the sign-ins held in memory and delete the
+    /// cache file; an in-flight poll's result is discarded on landing.
     func limitsChanged() {
         guard !isPreview else { return }
-        guard AppPreferences.shared.limitsEnabled else { quotas = []; return }
+        guard AppPreferences.shared.limitsEnabled else {
+            quotas = []
+            queue.async { [weak self] in self?.forgetQuotas() }
+            return
+        }
         queue.async { [weak self] in
             self?.lastQuotaFetchAt = .distantPast
             self?.loadQuotaCache()
@@ -512,15 +517,27 @@ final class MemoryMonitor: ObservableObject {
         lastQuotaFetchAt = now
         Task.detached { [weak self] in
             let readings = await QuotaFetcher.fetchAll(home: home)
-            let merged: [QuotaReading]? = await MainActor.run { [weak self] in
+            await MainActor.run { [weak self] in
+                guard let self else { return }
                 // Limits was turned off while this poll ran: drop it.
-                guard let self, AppPreferences.shared.limitsEnabled else { return nil }
-                let merged = QuotaMerge.merge(previous: self.quotas, fresh: readings)
-                self.quotas = merged
-                return merged
+                var merged: [QuotaReading]?
+                if AppPreferences.shared.limitsEnabled {
+                    let fresh = QuotaMerge.merge(previous: self.quotas, fresh: readings)
+                    self.quotas = fresh
+                    merged = fresh
+                }
+                // Enqueued here, on main, where `limitsChanged` enqueues too:
+                // the queue then runs this save and a switch-off's cleanup
+                // in the order they happened, so a save can't follow it.
+                self.quotaFetchFinished(merged)
             }
-            self?.quotaFetchFinished(merged)
         }
+    }
+    /// Queue-confined. Limits is off: delete the cached readings and drop
+    /// what the sources hold in memory (cached token, last good readings).
+    private func forgetQuotas() {
+        QuotaCache.remove(Self.quotaCacheURL)
+        Task.detached(priority: .utility) { await QuotaSources.forgetCredentials() }
     }
     /// Queue-confined. After a Claude credential failure, a changed sign-in
     /// file or Keychain item (modification dates only, never the secret)
@@ -537,10 +554,13 @@ final class MemoryMonitor: ObservableObject {
             self.quotas = QuotaSources.markClaudeSignInChanged(self.quotas)
         }
     }
-    /// Back on `queue`: cache the merged set, then allow the next poll.
+    /// Main thread; continues on `queue`: cache the merged set, then allow
+    /// the next poll. `merged` is nil when Limits was off as the poll
+    /// landed: nothing is written, and whatever the poll put back in the
+    /// sources' memory after the switch-off is forgotten again.
     private func quotaFetchFinished(_ merged: [QuotaReading]?) {
         queue.async { [weak self] in
-            if let merged { QuotaCache.save(merged, to: Self.quotaCacheURL) }
+            if let merged { QuotaCache.save(merged, to: Self.quotaCacheURL) } else { self?.forgetQuotas() }
             self?.quotaFetchInFlight = false
         }
     }

@@ -7,7 +7,9 @@ import SwiftUI
 final class AppPreferences: ObservableObject {
     static let shared = AppPreferences()
 
-    /// Off: the monitor reads no sign-ins, runs no CLI, makes no quota requests.
+    /// Off: nothing looks for or reads sign-ins (the monitor and Settings
+    /// alike), no CLI runs, no quota request is made, and the monitor drops
+    /// the cached token and deletes the cached readings.
     @Published private(set) var limitsEnabled: Bool
     /// "Use Claude Code's Keychain sign-in"; only has an effect while Limits is on.
     @Published private(set) var claudeKeychainEnabled: Bool

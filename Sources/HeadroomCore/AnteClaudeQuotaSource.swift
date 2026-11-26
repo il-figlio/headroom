@@ -165,6 +165,11 @@ actor AntePoller {
         return await task.value
     }
 
+    /// Drops every remembered reading (Limits was turned off). A run still in
+    /// flight settles afterwards and is remembered again, so the caller
+    /// forgets once more when that poll lands.
+    func forget() { lastGood.removeAll() }
+
     private func settle(_ key: URL, _ reading: QuotaReading) -> QuotaReading {
         inFlight[key] = nil
         guard let error = reading.error else {

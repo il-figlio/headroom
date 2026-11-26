@@ -184,6 +184,23 @@ private let goodBody = """
         #expect(reading.error == "Codex usage API returned HTTP 302")
         #expect(http.requests.count == 1)
     }
+
+    @Test func forgetDropsTheLastReadingAndARetryGate() async {
+        signIn(); defer { cleanUp() }
+        let http = FakeCodexHTTP(200, goodBody)
+        let codex = CodexQuotaSource(http: http.get)
+        _ = await codex.fetch(home: home)
+        http.reply(401, "{}")
+        #expect(await codex.fetch(home: home).windows.count == 2, "a failure replays the last reading")
+        #expect(await codex.fetch(home: home).error?.contains("next attempt") == true)
+        #expect(http.requests.count == 2, "gated")
+
+        codex.forget()
+        http.reply(500, "{}")
+        let blank = await codex.fetch(home: home)
+        #expect(http.requests.count == 3)
+        #expect(blank.error == "Codex usage API returned HTTP 500" && blank.windows.isEmpty && blank.plan == nil)
+    }
 }
 
 /// The shared session's own behaviour, checked without sending anything.

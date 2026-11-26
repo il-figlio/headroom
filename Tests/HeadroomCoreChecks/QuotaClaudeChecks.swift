@@ -341,6 +341,45 @@ private let signedInAt = Date(timeIntervalSince1970: 1_700_000_000)
     #expect(http.requests.count == 1 && keychain.calls == calls)
 }
 
+// MARK: - Forgetting (Limits turned off)
+
+@Test func forgetDropsTheCachedTokenAndTheLastGoodReading() async {
+    let home = Home(); defer { home.remove() }
+    let keychain = FakeKeychain(info: .init(modified: signedInAt), secret: .found(keychainRecord))
+    let failing = Flag(false)
+    let http = FakeHTTP { _ in failing.on ? (500, "{}") : (200, #"{"five_hour":{"utilization":10}}"#) }
+    let claude = source(keychain, http: http)
+    _ = await claude.fetch(home: home.url)
+    _ = await claude.fetch(home: home.url)
+    #expect(keychain.secretReads == 1, "the token is cached between fetches")
+
+    failing.on = true
+    let dimmed = await claude.fetch(home: home.url)
+    #expect(dimmed.error == "Claude usage API returned HTTP 500" && dimmed.windows.count == 1)
+
+    claude.forget()
+    let blank = await claude.fetch(home: home.url)
+    #expect(keychain.secretReads == 2, "nothing was cached, so the sign-in is read again")
+    #expect(blank.error == "Claude usage API returned HTTP 500")
+    #expect(blank.windows.isEmpty && blank.plan == nil, "no earlier reading is replayed")
+}
+
+@Test func forgetLiftsARetryGateAndTheFailureMemory() async {
+    let home = Home(); defer { home.remove() }
+    home.write(ClaudeQuotaSource.claudeFile, accountA, modified: signedInAt)
+    let http = FakeHTTP { _ in (401, "{}") }
+    let claude = source(FakeKeychain(), allowed: false, http: http)
+    _ = await claude.fetch(home: home.url)
+    #expect(await claude.fetch(home: home.url).error?.contains("next attempt") == true)
+    #expect(http.requests.count == 1, "gated")
+
+    claude.forget()
+    home.write(ClaudeQuotaSource.claudeFile, accountB, modified: signedInAt.addingTimeInterval(60))
+    #expect(!claude.noteSignInChange(home: home.url), "no failure is remembered")
+    _ = await claude.fetch(home: home.url)
+    #expect(http.requests.count == 2)
+}
+
 // MARK: - Request
 
 @Test func usageRequestAsksForModelWindowsAsHeadroom() async throws {

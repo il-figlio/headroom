@@ -51,6 +51,25 @@ private let w = [QuotaWindow(label: "5h", usedFraction: 0.4)]
     #expect(QuotaCache.load(url).isEmpty)
 }
 
+/// Limits turned off: the file goes, and only a later save brings it back.
+@Test func quotaCacheRemoveDeletesTheFile() {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("quota-cache-\(UUID().uuidString)/quota-cache.json")
+    defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+    QuotaCache.remove(url)  // nothing there yet: fine
+    QuotaCache.save([reading("a", windows: w)], to: url)
+    #expect(FileManager.default.fileExists(atPath: url.path))
+
+    QuotaCache.remove(url)
+    #expect(!FileManager.default.fileExists(atPath: url.path))
+    #expect(QuotaCache.load(url).isEmpty)
+    #expect(FileManager.default.fileExists(atPath: url.deletingLastPathComponent().path), "only the file is removed")
+
+    // Turned on again: an error-only poll has no old usage to merge with.
+    QuotaCache.save([reading("a", error: "offline")], to: url)
+    #expect(QuotaCache.load(url).map(\.windows) == [[]])
+}
+
 @Test func quotaStalenessResetAndMostConstrained() {
     let now = Date(timeIntervalSince1970: 100_000)
     #expect(!reading("a", windows: w, fetchedAt: now.addingTimeInterval(-60)).isStale(now: now))

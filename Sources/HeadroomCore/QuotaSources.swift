@@ -185,6 +185,8 @@ public final class CodexQuotaSource: QuotaSource, @unchecked Sendable {
 
     init(http: @escaping QuotaHTTP.Get) { self.http = http }
 
+    public func forget() { state.forget() }
+
     struct Credentials: Sendable {
         var accessToken: String
         var accountID: String?
