@@ -54,6 +54,11 @@ struct HistoryView: View {
                                 .help("Measure the largest locations once, at the lowest disk priority. Sizes persist until the next scan.")
                         }
                     }
+                    // Scanning walks the home folder, so it starts only from the button.
+                    if monitor.consumerScanText == nil && monitor.consumersStale {
+                        Text("\(monitor.consumers.items.isEmpty ? "No storage scan yet." : "These sizes are more than a day old.") A scan reads your home folder, so macOS may ask whether Headroom can access folders such as Desktop, Documents and Downloads.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                     if let free = monitor.trends.latestDiskFree, let total = monitor.trends.latestDiskTotal, total > 0 {
                         HStack(spacing: 24) {
                             stat("Free now", MemoryFormat.string(free))
@@ -131,11 +136,6 @@ struct HistoryView: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(24)
         }.frame(minWidth: 600, minHeight: 660).background(Color(nsColor: .windowBackgroundColor))
-        .onAppear {
-            // A stale (or missing) consumer table refreshes itself, once a day
-            // at most, always throttled and always cancellable.
-            if monitor.consumersStale && monitor.consumerScanText == nil { monitor.rescanConsumers() }
-        }
     }
     private func stat(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {

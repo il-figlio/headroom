@@ -161,4 +161,29 @@ import CSQLite
         cancelled.cancel()
         #expect(cancelled.scan(roots: [dir]).cancelled)
     }
+
+    // MARK: Time Machine snapshot count
+
+    func tool(_ script: String, in dir: URL) throws -> URL {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("fake-tmutil")
+        try Data("#!/bin/sh\n\(script)\n".utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url
+    }
+    @Test func snapshotCountReadsTheListing() throws {
+        let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let listing = try tool(#"[ "$1 $2" = "listlocalsnapshots /" ] || exit 64; echo "Snapshots for disk /:"; echo com.apple.TimeMachine.2026-11-24-101500.local; echo com.apple.TimeMachine.2026-11-25-101500.local; echo com.apple.os.update-ABC"#, in: dir)
+        #expect(ConsumerScanner.localSnapshotCount(tool: listing, timeout: 5) == 2)
+        #expect(ConsumerScanner.localSnapshotCount(tool: dir.appendingPathComponent("missing"), timeout: 5) == 0)
+    }
+    /// `tmutil` used to be waited on without limit. A tool that hangs is stopped
+    /// and counts as no snapshots.
+    @Test func snapshotCountGivesUpOnAToolThatHangs() throws {
+        let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let hanging = try tool("echo com.apple.TimeMachine.2026-11-24-101500.local\nexec sleep 30", in: dir)
+        let started = Date()
+        #expect(ConsumerScanner.localSnapshotCount(tool: hanging, timeout: 0.5) == 0)
+        #expect(Date().timeIntervalSince(started) < 10)
+    }
 }

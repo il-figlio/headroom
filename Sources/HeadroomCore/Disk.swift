@@ -159,18 +159,15 @@ public final class ConsumerScanner {
     }
 
     private func localSnapshotCount() -> Int {
-        let process = Process()
-        let pipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/tmutil")
-        process.arguments = ["listlocalsnapshots", "/"]
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            process.waitUntilExit()
-            let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            return text.split(separator: "\n").filter { $0.hasPrefix("com.apple.TimeMachine.") }.count
-        } catch { return 0 }
+        Self.localSnapshotCount(tool: URL(fileURLWithPath: "/usr/bin/tmutil"), timeout: 5)
+    }
+
+    /// Counts Time Machine local snapshots. `tmutil` gets a few seconds; one
+    /// that hangs, like one that can't be launched, counts as no snapshots.
+    static func localSnapshotCount(tool: URL, timeout: TimeInterval) -> Int {
+        let limits = BoundedProcess.Limits(timeout: timeout, killGrace: 1)
+        guard case .exited(_, let output) = BoundedProcess.run(tool, arguments: ["listlocalsnapshots", "/"], limits: limits) else { return 0 }
+        return String(decoding: output, as: UTF8.self).split(separator: "\n").filter { $0.hasPrefix("com.apple.TimeMachine.") }.count
     }
 }
 
