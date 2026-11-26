@@ -34,13 +34,6 @@ def main():
     template = (appconfig.ROOT / 'packaging/homebrew/headroom.rb').read_text()
     body = re.sub(r'\A(?:#.*\n)+', '', template)  # drop the template's own header comment
     rendered = appconfig.render(body, {**config, 'CASK_TOKEN': token, 'DMG_SHA256': digest})
-    # Homebrew tracks installed casks by token alone (Caskroom/<token>), so a cask that
-    # names its own token under conflicts_with conflicts with itself once it is installed.
-    if re.search(rf'^\s*conflicts_with\b.*"{re.escape(token)}"', rendered, flags=re.M):
-        print(f'render-cask: warning: the cask token "{token}" is also listed under conflicts_with. Homebrew tracks '
-              'installed casks by token, so `brew reinstall`, `brew fetch` and `brew upgrade` of this cask would '
-              'report a conflict with itself. Give CASK_TOKEN in packaging/app.env a different value before '
-              'publishing the tap.', file=sys.stderr)
     output = args.output or out_dir / f'{token}.rb'
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(rendered)

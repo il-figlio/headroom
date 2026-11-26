@@ -10,7 +10,7 @@ Headroom ships as a universal (Apple Silicon + Intel) app for macOS 13 or later,
 | `packaging/app.env` | App name, executable, bundle ID, minimum macOS, GitHub repo slug, feed URL, Sparkle public key and Keychain account, cask token, tap repo. |
 | `Resources/Info.plist.in` | Info.plist template, rendered by `scripts/appconfig.py` during `scripts/build.sh`. |
 | `Sources/HeadroomCore/UpdatePolicy.swift` | The feed URL and download allowlist compiled into the app. A Swift Testing check fails if they drift from `packaging/app.env`. |
-| `packaging/homebrew/headroom.rb` | Homebrew cask template. It declares a conflict with the official `headroom` cask, a different app that also installs `/Applications/Headroom.app`. |
+| `packaging/homebrew/headroom.rb` | Homebrew cask template. The official `headroom` cask is a different app with the same token and the same `/Applications/Headroom.app`; Homebrew tracks installed casks by token, so the template can't declare `conflicts_with` against it (the cask would conflict with itself). |
 
 To reuse this pipeline for another app, copy `VERSION`, `packaging/`, `Resources/Info.plist.in` and the `scripts/` release tools, then edit `packaging/app.env` and the `UpdatePolicy` constants.
 

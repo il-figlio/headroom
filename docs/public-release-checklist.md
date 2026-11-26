@@ -227,7 +227,8 @@ Headroom binary. Releases: [releases.md](releases.md).
       the app updates itself.
 - [ ] A `zap` stanza lists the app's data folder and preferences.
 - [ ] If another cask installs an app at the same path, the cask declares
-      it with `conflicts_with`.
+      it with `conflicts_with`, unless the two casks share a token: Homebrew
+      tracks installed casks by token, so the cask would conflict with itself.
 - [ ] A documented release step bumps the cask (`scripts/render-cask.py`).
 - [ ] Mark the README's Homebrew line "coming soon" until the tap works.
 
@@ -235,8 +236,9 @@ Headroom binary. Releases: [releases.md](releases.md).
 soon in the README. The `zap` stanza removes
 `~/Library/Application Support/org.headroom.app` and the `org.headroom.app`
 preferences, caches, and saved state. The official `headroom` cask is a
-different app that also installs `/Applications/Headroom.app`, so the cask
-declares `conflicts_with cask: "headroom"`.
+different app with the same token that also installs
+`/Applications/Headroom.app`, so the two can't be installed together and
+the cask can't declare the conflict. Install this one by its full name.
 
 ## 10. Clean-machine QA
 
