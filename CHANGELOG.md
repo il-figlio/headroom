@@ -45,9 +45,9 @@ download.
   a day old. The first scan can make macOS ask for access to folders such
   as Desktop, Documents, and Downloads; Headroom works without them and
   labels those folders as partial.
-- The fill rate and the days-until-full estimate appear once there are
-  several hours of history, and are fitted across all of the window's
-  samples.
+- The fill rate and the days-until-full estimate appear once disk readings
+  span at least six hours, and are fitted across all of the window's
+  samples, so one large download no longer reads as a daily rate.
 - The Agents card's tokens and estimated spend for today count only usage
   from the current local day, not the lifetime total of every session that
   was active today.
@@ -100,8 +100,8 @@ download.
   twice.
 - A Claude Code message that appears on several transcript lines, or is
   copied into a resumed session's transcript, is counted once.
-- Opus 4 and 4.1 usage is no longer priced at the Opus 4.5 rate. Models
-  without a known price stay in the unpriced bucket.
+- Opus 4 and 4.1 usage is shown as unpriced instead of being priced at
+  the Opus 4.5 rate.
 - Samples, events, hourly agent totals, and agent session rows older than
   30 days are pruned whenever the database is opened, not only while
   recording.

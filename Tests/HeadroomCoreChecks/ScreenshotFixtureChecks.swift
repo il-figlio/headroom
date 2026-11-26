@@ -22,7 +22,7 @@ import Testing
     #expect(demo.summary.consumers.items.allSatisfy { !$0.path.hasPrefix("/Users/") || $0.path.hasPrefix("/Users/demo/") })
 }
 
-/// The laptop machine keeps the shape the XCTest suite and README rely on.
+/// The laptop machine keeps the shape the other checks and the README rely on.
 @Test func laptopFixturesStayElevatedOnSixteenGigabytes() {
     let demo = ScreenshotFixtures(now: Date(timeIntervalSince1970: 1_800_000_000))
     #expect(demo.memory.total == 16 * 1_073_741_824)

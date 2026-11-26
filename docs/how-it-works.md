@@ -29,8 +29,9 @@ reads and sends, see [PRIVACY.md](../PRIVACY.md).
   read, sampled with memory history. No scanning is involved.
 - **Trends:** a 24-hour free-space chart, the measured fill rate, and an
   estimate of days until full. The fill rate and the estimate appear only
-  once there are several hours of history, and they are fitted across all
-  of the window's samples.
+  once disk readings span at least six hours, and they are fitted across
+  all of the window's samples, so one large download doesn't read as a
+  daily rate.
 - **Consumer scan, on demand only.** A bounded set of roots (your home
   folder at depth one, `~/Library` one level deeper, and `/Applications`)
   is walked on a single thread at the lowest I/O priority
@@ -136,7 +137,9 @@ is off, Headroom does no agent scanning at all.
 - **Today means today.** Today's tokens and estimated spend count only
   usage whose own timestamps fall in the current local day. They are
   derived from the hourly totals, so a session that has run for days adds
-  only what it used today, not its lifetime total.
+  only what it used today, not its lifetime total. The hourly totals
+  follow UTC hours, so in a time zone offset by 30 or 45 minutes the
+  part-hour after local midnight is counted with the previous day.
 - **Provider-agnostic.** Headroom watches the folders coding agents keep
   their session transcripts in (`~/.claude`, `~/.codex`, `~/.openclaw`,
   `~/.devin`, and the folders used by Goose, opencode, Aider, Gemini,
@@ -156,11 +159,14 @@ is off, Headroom does no agent scanning at all.
 - **Live health.** Transcripts are matched to running processes, which are
   listed with `/bin/ps` under a time limit: `live`, `stuck` (process alive
   but transcript quiet for 10 minutes), `zombie` (file grew with no
-  process), or `ended`.
-- **Honest cost.** Tokens are priced per model from a versioned table, each
-  model at its own rate: Opus 4 and 4.1, for example, are not priced at the
-  Opus 4.5 rate. Models without a known price are counted in a separate
-  *unpriced* bucket instead of being folded into a wrong-looking total.
+  process), or `ended`. If the process list can't be read, the card says
+  so, sessions are shown as live or ended from transcript activity alone,
+  and memory isn't shown.
+- **Honest cost.** Tokens are priced per model from a versioned table.
+  Models without a known price (Opus 4 and 4.1, for example, which the
+  table doesn't cover) are counted in a separate *unpriced* bucket instead
+  of being folded into a wrong-looking total. Today's unpriced figure is a
+  lower bound.
 - **Retention.** Hourly token totals older than 30 days are deleted. A
   session's stored metadata (its project folder and transcript path
   included) is deleted 30 days after the session's last activity.
