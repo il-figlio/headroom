@@ -2,9 +2,9 @@ import Foundation
 import Testing
 @testable import HeadroomCore
 
-/// What counts as a token and as "today": Codex and Claude Code usage shapes,
-/// duplicate responses and day totals from hourly burn. Synthetic transcripts
-/// in throwaway temp directories only.
+/// What counts as a token, a dollar and "today": Codex and Claude Code usage
+/// shapes, duplicate responses, the price table and day totals from hourly
+/// burn. Synthetic transcripts in throwaway temp directories only.
 @Suite struct AgentAccountingChecks {
     let now = Date(timeIntervalSince1970: 1_795_521_600) // 2026-11-24T12:00:00Z
     var utc: Calendar {
@@ -300,6 +300,36 @@ import Testing
         for index in 0..<1000 { _ = count(&ledger, "m\(index)") }
         #expect(ledger.count == 2)
         #expect(count(&ledger, "m999") == 0)
+    }
+
+    // MARK: Prices
+
+    /// The $5/$25 Opus rate is 4.5 onwards. Opus 4 and 4.1 had other list
+    /// prices and are left unpriced rather than estimated.
+    @Test func opusRateCoversFourPointFiveOnwardsOnly() throws {
+        for model in ["claude-opus-4-5", "claude-opus-4-5-20251101", "claude-opus-4-6", "claude-opus-4-7", "Claude-Opus-4-6"] {
+            let rate = try #require(AgentPricing.rate(for: model), "\(model)")
+            #expect(rate.input == 5 && rate.output == 25 && rate.cacheRead == 0.5 && rate.cacheWrite == 6.25)
+        }
+        for model in ["claude-opus-4", "claude-opus-4-0", "claude-opus-4-0-20250514", "claude-opus-4-1", "claude-opus-4-1-20250805",
+                      "claude-opus-4-20250514", "claude-opus-4-2025", "claude-opus-3"] {
+            #expect(AgentPricing.rate(for: model) == nil, "\(model)")
+        }
+        #expect(AgentPricing.rate(for: "claude-sonnet-4-5")?.input == 3)
+        #expect(AgentPricing.rate(for: "claude-sonnet-4-20250514")?.output == 15)
+        #expect(AgentPricing.rate(for: "claude-haiku-4-5")?.input == 1)
+    }
+
+    @Test func opusFourPointOneSessionIsUnpriced() throws {
+        let root = try tempDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let (scanner, project) = try claudeHome(root)
+        try claudeLine(id: "msg_1", request: "req_1", model: "claude-opus-4-1-20250805").write(to: project.appendingPathComponent("s.jsonl"))
+        let result = scanner.scan(now: now, calendar: utc, processes: [])
+        #expect(result.sessions.first?.costUSD == nil)
+        #expect(result.sessions.first?.unpricedTokens == 15)
+        #expect(result.usage.allSatisfy { $0.cost.isEmpty })
+        #expect(result.snapshot.todayCostUSD == nil)
+        #expect(result.snapshot.unpricedTokensToday == 15)
     }
 
     // MARK: Today

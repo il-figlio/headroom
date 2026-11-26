@@ -240,11 +240,17 @@ public struct PriceRate: Sendable {
 /// Versioned price table. Unknown models return nil and land in `unpriced`
 /// buckets — cost is always honest about what it couldn't price.
 public enum AgentPricing {
-    private static let table: [(pattern: String, rate: PriceRate)] = [
-        ("claude-opus-4", .init(input: 5.0, output: 25.0, cacheRead: 0.50, cacheWrite: 6.25)),
-        ("claude-sonnet-4", .init(input: 3.0, output: 15.0, cacheRead: 0.30, cacheWrite: 3.75)),
-        ("claude-haiku-4", .init(input: 1.0, output: 5.0, cacheRead: 0.10, cacheWrite: 1.25)),
-    ]
+    /// The Opus rate is the list price from Opus 4.5 on. Opus 4 and 4.1
+    /// (`claude-opus-4`, `claude-opus-4-0`, `claude-opus-4-1…` and the dated
+    /// `claude-opus-4-2025…` ids) were priced differently, so they are left
+    /// out and count as unpriced rather than being estimated at this rate.
+    private static let table: [(pattern: String, rate: PriceRate)] =
+        ["5", "6", "7", "8", "9"].map {
+            ("claude-opus-4-\($0)", PriceRate(input: 5.0, output: 25.0, cacheRead: 0.50, cacheWrite: 6.25))
+        } + [
+            ("claude-sonnet-4", .init(input: 3.0, output: 15.0, cacheRead: 0.30, cacheWrite: 3.75)),
+            ("claude-haiku-4", .init(input: 1.0, output: 5.0, cacheRead: 0.10, cacheWrite: 1.25)),
+        ]
     /// Family-prefix match. Returns nil when we don't know the price.
     public static func rate(for model: String) -> PriceRate? {
         let m = model.lowercased()
