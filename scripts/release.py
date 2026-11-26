@@ -9,8 +9,11 @@
             already be stapled (scripts/notarize-xcode.py path).
   appcast   Signs the ZIP and writes a signed single-item appcast.xml.
   verify    Checks the app, ZIP, DMG, appcast and SHA256SUMS in dist/releases/<tag>.
-  publish   Creates a draft GitHub release and uploads the assets (gh CLI).
-  promote   After the release is published: verifies the feed and copies it to
+  publish   Creates a draft GitHub release and uploads the assets (gh CLI). Push
+            the signed tag first and pass --verify-tag: publishing a draft whose
+            tag doesn't exist makes GitHub create an unsigned lightweight tag.
+  promote   After the release is published: downloads the published ZIP, verifies
+            the feed and its archive signature against it, and copies the feed to
             ./appcast.xml for a commit to main. That commit is what ships the update.
 
 Values come from VERSION and packaging/app.env. Sparkle's sign_update reads the
@@ -50,7 +53,6 @@ SUMS = OUT / 'SHA256SUMS'
 TOOLS = ROOT / '.build-headroom/sparkle-tools/bin'
 SPARKLE_NS = 'http://www.andymatuschak.org/xml-namespaces/sparkle'
 PUBLIC_URL = f'https://github.com/{REPO}/releases/download/{TAG}/{ZIP.name}'
-LEGACY_URL = re.compile(rf'https://api\.github\.com/repos/{re.escape(REPO)}/releases/assets/\d+')
 
 
 class Failure(RuntimeError):
@@ -275,10 +277,7 @@ def appcast(args):
     notes = args.notes or default_notes()
     if not notes.is_file():
         raise Failure(f'Release notes {notes} not found; pass --notes.')
-    url = PUBLIC_URL
-    if args.legacy_asset_id:
-        url = f'https://api.github.com/repos/{REPO}/releases/assets/{int(args.legacy_asset_id)}'
-    write_appcast(key_source(args.ed_key_file), url, notes)
+    write_appcast(key_source(args.ed_key_file), PUBLIC_URL, notes)
 
 
 # ---------------------------------------------------------------------- checks
@@ -311,7 +310,9 @@ def split_feed(data):
 
 def check_feed(path, public, zip_path=None):
     """Well-formed, signed by `public`, one item for VERSION/BUILD whose
-    enclosure is this release's public download (or the legacy bridge URL)."""
+    enclosure is this release's public download: the only URL the app's
+    UpdatePolicy.allowsArchive accepts. With `zip_path`, the enclosure's length
+    and edSignature must match that file."""
     data = path.read_bytes()
     signed, signature = split_feed(data)
     if not ed25519.verify(public, signed, signature):
@@ -326,8 +327,8 @@ def check_feed(path, public, zip_path=None):
         raise Failure(f'appcast item is {found}, expected {(BUILD, VERSION)}')
     enclosure = item.find('enclosure')
     url = enclosure.get('url')
-    if url != PUBLIC_URL and not LEGACY_URL.fullmatch(url):
-        raise Failure(f'Unexpected enclosure URL {url}')
+    if url != PUBLIC_URL:
+        raise Failure(f'Unexpected enclosure URL {url}; the app only accepts {PUBLIC_URL}')
     if enclosure.get(f'{{{SPARKLE_NS}}}installationType') != 'application':
         raise Failure('Enclosure must use sparkle:installationType="application".')
     if zip_path is not None:
@@ -424,6 +425,28 @@ def find_release():
     return next((r for r in releases if r['tag_name'] == TAG), None)
 
 
+def tag_problem():
+    """Why TAG is not a signed annotated tag that has been pushed; None when it is."""
+    ref = run('gh', 'api', f'repos/{REPO}/git/ref/tags/{TAG}', check=False, capture_output=True, text=True)
+    if ref.returncode != 0:
+        if 'HTTP 404' not in ref.stderr:
+            raise Failure(f'Could not look up tag {TAG} on GitHub: {ref.stderr.strip()}')
+        return f'no tag {TAG} exists on GitHub'
+    pushed = json.loads(ref.stdout)['object']
+    if pushed['type'] != 'tag':
+        return f'{TAG} on GitHub is a lightweight tag, not an annotated one'
+    local = output('git', 'rev-parse', '--verify', '--quiet', f'refs/tags/{TAG}', check=False)
+    if local != pushed['sha']:
+        return f'{TAG} on GitHub ({pushed["sha"][:12]}) is not the local tag ({local[:12] or "none"})'
+    if run('git', 'verify-tag', TAG, check=False, capture_output=True).returncode != 0:
+        return f'git verify-tag does not accept a signature on {TAG}'
+    return None
+
+
+TAG_HINT = (f"Create and push the signed tag on the release commit first: git tag -s {TAG} -m '{APP_NAME} {VERSION}' "
+            f'&& git push origin {TAG}; then run publish --verify-tag.')
+
+
 def publish(args):
     for path in (ZIP, DMG, SUMS):
         if not path.is_file():
@@ -432,24 +455,46 @@ def publish(args):
     release = find_release()
     if release and not release['draft']:
         raise Failure(f'{TAG} is already published; bump VERSION.')
-    # CI releases the pushed tag; a local publisher targets HEAD and GitHub creates the tag on publish.
-    target = [] if args.verify_tag else ['--target', output('git', 'rev-parse', 'HEAD')]
+    problem = tag_problem()
+    if problem and args.verify_tag:
+        raise Failure(f'{problem}. {TAG_HINT}')
+    head = output('git', 'rev-parse', 'HEAD')
+    if not problem and output('git', 'rev-parse', f'refs/tags/{TAG}^{{commit}}') != head:
+        print(f'warning: {TAG} does not point at HEAD ({head[:12]}); the release will be the tagged commit.', file=sys.stderr)
+    # With --verify-tag the release uses the pushed tag. Without it the draft targets HEAD, and
+    # publishing that draft makes GitHub create the tag itself when none exists (see the hint below).
+    target = [] if args.verify_tag else ['--target', head]
     if release:
         gh_release('edit', TAG, *target, '--notes-file', notes)
     else:
         gh_release('create', TAG, '--draft', *(target or ['--verify-tag']), '--title', f'{APP_NAME} {VERSION}', '--notes-file', notes)
     gh_release('upload', TAG, ZIP, DMG, SUMS, '--clobber')
-    if args.legacy_bridge:
-        asset = next(a for a in find_release()['assets'] if a['name'] == ZIP.name)
-        step(f'Bridge feed for pre-public builds: enclosure uses API asset {asset["id"]}')
-        write_appcast(key_source(args.ed_key_file), f'https://api.github.com/repos/{REPO}/releases/assets/{int(asset["id"])}', notes)
-    elif not FEED.is_file():
+    if not FEED.is_file():
         raise Failure(f'{FEED} is missing; run appcast first.')
     check_feed(FEED, base64.b64decode(CONFIG['SPARKLE_PUBLIC_ED_KEY']), ZIP)
     gh_release('upload', TAG, FEED, '--clobber')
     print(f'Draft {TAG} ready: {find_release()["html_url"]}')
+    if problem:
+        print(f'DO NOT PUBLISH THIS DRAFT YET: {problem}. Publishing it now would make GitHub create an '
+              f'unsigned lightweight tag, or release a tag that is not the signed one. {TAG_HINT}', file=sys.stderr)
+        return
     print(f'Next: review it, publish it (gh release edit {TAG} --draft=false --latest --repo {REPO}),')
     print('then run scripts/release.py promote and commit appcast.xml to main.')
+
+
+def download(url, destination, limit):
+    """Anonymous GET, following GitHub's storage redirect as Sparkle does. Stops
+    after `limit` + 1 bytes, so an oversized file fails the length check instead
+    of filling the disk."""
+    request = urllib.request.Request(url, headers={'Accept': 'application/octet-stream'})
+    with urllib.request.urlopen(request, timeout=60) as response, open(destination, 'wb') as handle:
+        remaining = limit + 1
+        while remaining > 0:
+            chunk = response.read(min(1 << 20, remaining))
+            if not chunk:
+                break
+            handle.write(chunk)
+            remaining -= len(chunk)
 
 
 def promote(args):
@@ -461,14 +506,22 @@ def promote(args):
             source = pathlib.Path(temp) / 'appcast.xml'
             urllib.request.urlretrieve(f'https://github.com/{REPO}/releases/download/{TAG}/appcast.xml', source)
         url = check_feed(source, public)
-        length = int(ET.fromstring(source.read_bytes()).find('./channel/item/enclosure').get('length'))
         if args.no_download_check:
-            print('warning: not checking that the enclosure is publicly downloadable.', file=sys.stderr)
+            print('warning: --no-download-check: the published archive was NOT downloaded, so nothing confirms that '
+                  "it exists or that the feed's length and edSignature match it.", file=sys.stderr)
         else:
-            request = urllib.request.Request(url, method='HEAD', headers={'Accept': 'application/octet-stream'})
-            with urllib.request.urlopen(request, timeout=30) as response:  # follows GitHub's storage redirect
-                if int(response.headers.get('Content-Length', -1)) != length:
-                    raise Failure(f'{url} is not publicly downloadable with the expected length yet. Publish the release first.')
+            # What clients will download: its length and edSignature must be the ones in the feed.
+            length = int(ET.fromstring(source.read_bytes()).find('./channel/item/enclosure').get('length'))
+            archive = pathlib.Path(temp) / ZIP.name
+            step(f'Downloading {url}')
+            try:
+                download(url, archive, length)
+            except OSError as error:
+                raise Failure(f'{url} is not publicly downloadable yet ({error}). Publish the release first.')
+            try:
+                check_feed(source, public, archive)
+            except Failure as error:
+                raise Failure(f'The archive published at {url} does not match the feed. {error}')
         (ROOT / 'appcast.xml').write_bytes(source.read_bytes())
     print(f'appcast.xml now offers {VERSION} ({BUILD}) from {url}')
     print('Commit it byte-for-byte to main (directly or via a PR); clients see it once it lands on main.')
@@ -481,22 +534,23 @@ def main():
         sub = commands.add_parser(name)
         if name in ('dry-run', 'appcast', 'publish'):
             sub.add_argument('--notes', type=pathlib.Path, help='Markdown-ish notes (default docs/releases/<tag>.md)')
+        if name in ('dry-run', 'appcast'):
             sub.add_argument('--ed-key-file', type=pathlib.Path, help='Sparkle private key file (default: env or Keychain)')
         if name == 'package':
             sub.add_argument('--local', action='store_true', help='Any signature, no notarization (testing only)')
             sub.add_argument('--notary-profile', help='notarytool Keychain profile when no API key env is set')
-        if name == 'appcast':
-            sub.add_argument('--legacy-asset-id', type=int, help='Bridge: enclose the API asset URL old private builds accept')
         if name == 'verify':
             sub.add_argument('--distribution', action='store_true', help='Also require Developer ID, stapling, Gatekeeper')
             sub.add_argument('--public-key', help='Verify against this base64 key instead of SUPublicEDKey')
         if name == 'publish':
-            sub.add_argument('--legacy-bridge', action='store_true', help='Point the feed at the API asset URL (first public release only)')
-            sub.add_argument('--verify-tag', action='store_true', help='Use the pushed tag instead of HEAD (CI)')
+            sub.add_argument('--verify-tag', action='store_true',
+                             help='Release the signed annotated tag that is already pushed; refuse when it is missing, '
+                                  'lightweight, differs from the local tag or fails git verify-tag (the documented flow)')
         if name == 'promote':
             sub.add_argument('--from-release', action='store_true', help='Use the appcast.xml attached to the published release')
             sub.add_argument('--no-download-check', action='store_true',
-                             help='Skip the anonymous download check (a legacy-bridge feed while the repo is still private)')
+                             help="Don't download the published ZIP to check the feed's length and edSignature "
+                                  'against it (prints a warning)')
     args = parser.parse_args()
     {'dry-run': dry_run, 'package': package, 'appcast': appcast, 'verify': verify,
      'publish': publish, 'promote': promote}[args.command](args)
