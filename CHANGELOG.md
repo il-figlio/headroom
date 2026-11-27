@@ -21,9 +21,9 @@ download.
   in Limits, read through the `ante usage` command. Named accounts need the
   Ante CLI at `~/.ante/bin/ante`; while any exist, they replace the Claude
   Code row.
-- Claude Code users whose sign-in lives in the login Keychain now see their
-  Claude limits. Headroom never shows a Keychain prompt, and **Use Claude
-  Code's Keychain sign-in** in Settings → Limits turns Keychain use off.
+- Limits can use Claude Code's sign-in from the login Keychain when macOS
+  grants Headroom access without a prompt. Turn this off with **Use Claude
+  Code's Keychain sign-in** in Settings → Limits.
 - Claude's model-specific weekly windows (for example Sonnet or Opus) appear
   alongside the 5-hour and weekly windows when Anthropic reports them.
 - When a sign-in changes, Limits notices on its next poll without reading

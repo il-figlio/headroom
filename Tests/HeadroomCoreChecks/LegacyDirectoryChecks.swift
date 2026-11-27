@@ -23,7 +23,7 @@ import Testing
         let (legacy, current) = try scratch()
         try write("# Headroom observations\n\nUpdated now.", "log.md", in: legacy)
         for name in ["history.sqlite", "history.sqlite-wal", "quota-cache.json"] { try write("x", name, in: legacy) }
-        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .completed)
         for name in ["log.md", "history.sqlite", "history.sqlite-wal", "quota-cache.json"] { #expect(exists(current, name)) }
         #expect(!exists(legacy))
     }
@@ -33,7 +33,7 @@ import Testing
         try write("# Headroom observations", "log.md", in: legacy)
         try write("db", "history.sqlite", in: legacy)
         try write("keychain", "signing/headroom-signing.keychain-db", in: legacy)
-        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .completed)
         #expect(exists(current, "history.sqlite"))
         #expect(exists(legacy, "signing/headroom-signing.keychain-db"))
         #expect(!exists(legacy, "history.sqlite"))
@@ -43,7 +43,7 @@ import Testing
         let (legacy, current) = try scratch()
         try write("db", "history.sqlite", in: legacy)
         try write("something else", "log.md", in: legacy)
-        #expect(!HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .notNeeded)
         #expect(exists(legacy, "history.sqlite"))
         #expect(!exists(current))
     }
@@ -53,7 +53,7 @@ import Testing
         try write("# Headroom observations", "log.md", in: legacy)
         try write("old", "history.sqlite", in: legacy)
         try write("new", "history.sqlite", in: current)
-        #expect(!HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .notNeeded)
         #expect(exists(legacy, "history.sqlite"))
         #expect(try String(contentsOf: current.appendingPathComponent("history.sqlite"), encoding: .utf8) == "new")
     }
@@ -62,13 +62,13 @@ import Testing
         let (legacy, current) = try scratch()
         try write("# Headroom observations", "log.md", in: legacy)
         try FileManager.default.createDirectory(at: current, withIntermediateDirectories: true)
-        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .completed)
         #expect(exists(current, "log.md"))
     }
 
     @Test func nothingToMove() throws {
         let (legacy, current) = try scratch()
-        #expect(!HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .notNeeded)
         #expect(!exists(current))
     }
 
@@ -129,13 +129,13 @@ import Testing
         #expect(try samples(in: alone) == "0")
 
         #expect(HistoryStore.legacyMigrationPending(from: legacy, to: current))
-        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .completed)
         #expect(!HistoryStore.legacyMigrationPending(from: legacy, to: current))
         // Folded in before the move, so the main file holds the rows by itself.
         #expect(size(current, "history.sqlite-wal") <= 0)
         try expectFullyMoved(legacy, current)
         // A second launch has nothing to do.
-        #expect(!HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .notNeeded)
     }
 
     /// Stops the move after every possible number of steps, as a kill or power
@@ -148,14 +148,16 @@ import Testing
             let (legacy, current) = try scratch()
             defer { try? FileManager.default.removeItem(at: legacy.deletingLastPathComponent()) }
             try legacyInstall(legacy)
-            HistoryStore.migrateLegacyDirectory(from: legacy, to: current, stoppingAfter: steps)
+            let outcome = HistoryStore.migrateLegacyDirectory(from: legacy, to: current, stoppingAfter: steps)
             if exists(legacy) || exists(current, marker) {
+                #expect(outcome == .blocked)
                 interrupted += 1
                 // Nothing is ever in both places or in neither.
                 for name in ["history.sqlite", "log.md", "quota-cache.json", archive + "/history.sqlite"] {
                     #expect(exists(legacy, name) != exists(current, name), "\(name) after \(steps) steps")
                 }
             } else {
+                #expect(outcome == .completed)
                 completedFirstTime = true
             }
             HistoryStore.migrateLegacyDirectory(from: legacy, to: current)
@@ -175,7 +177,7 @@ import Testing
         try FileManager.default.moveItem(at: legacy.appendingPathComponent("history.sqlite"), to: current.appendingPathComponent("history.sqlite"))
         try write("moving", marker, in: current)
         #expect(HistoryStore.legacyMigrationPending(from: legacy, to: current))
-        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .completed)
         try expectFullyMoved(legacy, current)
     }
 
@@ -186,7 +188,7 @@ import Testing
         try legacyInstall(legacy)
         try write("new", "history.sqlite", in: current)
         #expect(!HistoryStore.legacyMigrationPending(from: legacy, to: current))
-        #expect(!HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .notNeeded)
         for name in ["history.sqlite-wal", "quota-cache.json", "log.md", archive + "/log.md"] { #expect(exists(legacy, name)) }
         #expect(!exists(current, "Archives"))
     }
@@ -198,17 +200,14 @@ import Testing
         try write("moving", marker, in: current)
         try write("new", "history.sqlite", in: current)
         try write("# Headroom observations\n\nNew.", "log.md", in: current)
-        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .blocked)
         #expect(text(current, "history.sqlite") == "new")
         #expect(text(current, "log.md")?.hasSuffix("New.") == true)
         // The old database stays whole where it was, sidecars included.
         for name in ["history.sqlite", "history.sqlite-wal", "log.md"] { #expect(exists(legacy, name)) }
         #expect(!exists(current, "history.sqlite-wal"))
-        // What had no counterpart still moved, and the move is settled.
-        #expect(text(current, "quota-cache.json") == "{}")
-        #expect(exists(current, archive + "/log.md"))
-        #expect(!exists(current, marker))
-        #expect(!HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+        #expect(exists(current, marker))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .blocked)
     }
 
     @Test func mergesArchivesIntoAnExistingArchivesFolder() throws {
@@ -219,7 +218,7 @@ import Testing
         // The new folder already has an archive of its own and one with the same name.
         try write("kept", "Archives/1795000000-ABCDEF/history.sqlite", in: current)
         try write("already here", archive + "/history.sqlite", in: current)
-        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .completed)
         #expect(text(current, "Archives/1795000000-ABCDEF/history.sqlite") == "kept")
         #expect(text(current, "Archives/1780000000-FFFFFF/history.sqlite") == "older archive")
         // Same name on both sides: neither is touched, so the old folder stays for it.
@@ -231,7 +230,7 @@ import Testing
         #expect(!exists(current, marker))
     }
 
-    /// A database another connection is writing to belongs to a copy that is
+    /// A database another connection is reading belongs to a copy that is
     /// still running. Nothing moves until it lets go.
     @Test func leavesABusyDatabaseForALaterLaunch() throws {
         let (legacy, current) = try scratch()
@@ -239,15 +238,28 @@ import Testing
         try legacyInstall(legacy)
         do {
             let running = try HistoryStore(directory: legacy, now: base)
-            try running.executeForTesting("BEGIN IMMEDIATE")
-            #expect(!HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+            try running.executeForTesting("BEGIN")
+            #expect(try running.executeForTesting("SELECT count(*) FROM samples")[0][0] == "5")
+            #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .blocked)
             for name in ["history.sqlite", "quota-cache.json", "log.md", archive + "/log.md"] { #expect(exists(legacy, name)) }
             #expect(!exists(current, "history.sqlite"))
             #expect(HistoryStore.legacyMigrationPending(from: legacy, to: current))
             try running.executeForTesting("ROLLBACK")
         }
-        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .completed)
         try expectFullyMoved(legacy, current)
+    }
+
+    @Test func checkpointErrorKeepsDatabaseAndMarkerForRetry() throws {
+        let (legacy, current) = try scratch()
+        defer { try? FileManager.default.removeItem(at: legacy.deletingLastPathComponent()) }
+        try write("# Headroom observations", "log.md", in: legacy)
+        let corrupt = "SQLite format 3\0" + String(repeating: "x", count: 200)
+        try write(corrupt, "history.sqlite", in: legacy)
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .blocked)
+        #expect(text(legacy, "history.sqlite") == corrupt)
+        #expect(exists(current, marker))
+        #expect(!exists(current, "history.sqlite"))
     }
 
     /// A marker doesn't make someone else's folder ours.
@@ -259,7 +271,7 @@ import Testing
         try write("theirs", "Archives/one/file", in: legacy)
         try write("moving", marker, in: current)
         #expect(!HistoryStore.legacyMigrationPending(from: legacy, to: current))
-        #expect(!HistoryStore.migrateLegacyDirectory(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .notNeeded)
         for name in ["log.md", "history.sqlite", "Archives/one/file"] { #expect(exists(legacy, name)) }
         #expect(try FileManager.default.contentsOfDirectory(atPath: current.path).isEmpty)
     }

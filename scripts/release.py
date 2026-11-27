@@ -9,9 +9,10 @@
             already be stapled (scripts/notarize-xcode.py path).
   appcast   Signs the ZIP and writes a signed single-item appcast.xml.
   verify    Checks the app, ZIP, DMG, appcast and SHA256SUMS in dist/releases/<tag>.
-  publish   Creates a draft GitHub release and uploads the assets (gh CLI). Push
-            the signed tag first and pass --verify-tag: publishing a draft whose
-            tag doesn't exist makes GitHub create an unsigned lightweight tag.
+  publish   Preflights the distribution assets, creates or updates a draft
+            GitHub release and uploads the assets (gh CLI). Push the signed tag
+            on HEAD first and pass --verify-tag: publishing a draft whose tag
+            doesn't exist makes GitHub create an unsigned lightweight tag.
   promote   After the release is published: downloads the published ZIP, verifies
             the feed and its archive signature against it, and copies the feed to
             ./appcast.xml for a commit to main. That commit is what ships the update.
@@ -317,7 +318,10 @@ def check_feed(path, public, zip_path=None):
     signed, signature = split_feed(data)
     if not ed25519.verify(public, signed, signature):
         raise Failure(f'{path} feed signature does not verify.')
-    items = ET.fromstring(data).findall('./channel/item')
+    try:
+        items = ET.fromstring(data).findall('./channel/item')
+    except ET.ParseError as error:
+        raise Failure(f'{path} is not well-formed XML: {error}') from error
     if len(items) != 1:
         raise Failure('appcast.xml must contain exactly one item.')
     item = items[0]
@@ -326,15 +330,17 @@ def check_feed(path, public, zip_path=None):
     if found != (BUILD, VERSION):
         raise Failure(f'appcast item is {found}, expected {(BUILD, VERSION)}')
     enclosure = item.find('enclosure')
+    if enclosure is None:
+        raise Failure('appcast item has no enclosure.')
     url = enclosure.get('url')
     if url != PUBLIC_URL:
         raise Failure(f'Unexpected enclosure URL {url}; the app only accepts {PUBLIC_URL}')
     if enclosure.get(f'{{{SPARKLE_NS}}}installationType') != 'application':
         raise Failure('Enclosure must use sparkle:installationType="application".')
     if zip_path is not None:
-        if int(enclosure.get('length')) != zip_path.stat().st_size:
+        if int(enclosure.get('length', '')) != zip_path.stat().st_size:
             raise Failure('Enclosure length does not match the ZIP.')
-        if not ed25519.verify(public, zip_path.read_bytes(), base64.b64decode(enclosure.get(f'{{{SPARKLE_NS}}}edSignature'))):
+        if not ed25519.verify(public, zip_path.read_bytes(), base64.b64decode(enclosure.get(f'{{{SPARKLE_NS}}}edSignature', ''))):
             raise Failure('Enclosure edSignature does not verify against the ZIP.')
     return url
 
@@ -349,46 +355,56 @@ def mounted(dmg):
             run('hdiutil', 'detach', '-quiet', mountpoint, check=False)
 
 
-def verify(args, public=None):
-    distribution = args.distribution
-    public = public or base64.b64decode(args.public_key or CONFIG['SPARKLE_PUBLIC_ED_KEY'])
-    report = []
-    info = check_app_info()
-    report.append(f'app: {info["CFBundleShortVersionString"]} ({info["CFBundleVersion"]}) {info["CFBundleIdentifier"]}, '
-                  f'archs {" ".join(check_universal())}')
-    run('codesign', '--verify', '--deep', '--strict', APP)
-    for line in SUMS.read_text().splitlines():
-        digest, name = line.split('  ', 1)
-        if sha256(OUT / name) != digest:
-            raise Failure(f'SHA256SUMS mismatch for {name}')
-    report.append(f'SHA256SUMS: {len(SUMS.read_text().splitlines())} files match')
+def check_developer_id(path):
+    if 'Authority=Developer ID Application:' not in codesign_details(path):
+        raise Failure(f'{path.name} is not Developer ID signed.')
+
+
+def check_signed_app(app, distribution):
+    info = check_app_info(app)
+    archs = check_universal(app)
+    run('codesign', '--verify', '--deep', '--strict', app)
+    if distribution:
+        check_developer_id(app)
+        run('xcrun', 'stapler', 'validate', app)
+        run('spctl', '--assess', '--type', 'execute', '--verbose=2', app)
+    return info, archs
+
+
+def check_artifacts(public, distribution):
+    expected = sorted(f'{sha256(path)}  {path.name}' for path in (ZIP, DMG))
+    if sorted(SUMS.read_text().splitlines()) != expected:
+        raise Failure(f'SHA256SUMS must contain exactly the matching checksums for {ZIP.name} and {DMG.name}.')
+    url = check_feed(FEED, public, ZIP)
+    report = ['SHA256SUMS: 2 files match', f'appcast: well-formed, feed + archive signatures verify, enclosure {url}']
+    if distribution:
+        run('codesign', '--verify', '--strict', DMG)
+        check_developer_id(DMG)
+        # The Xcode export path staples the app but may leave the DMG unstapled.
+        if is_stapled(DMG):
+            run('spctl', '--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose=2', DMG)
     with tempfile.TemporaryDirectory() as temp:
         run('ditto', '-x', '-k', ZIP, temp)
-        extracted = pathlib.Path(temp) / APP.name
-        check_app_info(extracted)
-        check_universal(extracted)
-        run('codesign', '--verify', '--deep', '--strict', extracted)
+        check_signed_app(pathlib.Path(temp) / APP.name, distribution)
         report.append(f'zip: {ZIP.name} extracts {APP.name} with a valid signature')
     with mounted(DMG) as volume:
         entries = sorted(p.name for p in volume.iterdir() if not p.name.startswith('.'))
         link = volume / 'Applications'
         if entries != sorted([APP.name, 'Applications']) or not link.is_symlink() or os.readlink(link) != '/Applications':
             raise Failure(f'DMG layout is wrong: {entries}')
-        check_app_info(volume / APP.name)
-        check_universal(volume / APP.name)
-        run('codesign', '--verify', '--deep', '--strict', volume / APP.name)
+        check_signed_app(volume / APP.name, distribution)
         report.append(f'dmg: {DMG.name} mounts with {", ".join(entries)} -> /Applications')
-    url = check_feed(FEED, public, ZIP)
-    report.append(f'appcast: well-formed, feed + archive signatures verify, enclosure {url}')
     if distribution:
-        for path in (APP, DMG):
-            if 'Authority=Developer ID Application:' not in codesign_details(path):
-                raise Failure(f'{path.name} is not Developer ID signed.')
-        run('xcrun', 'stapler', 'validate', APP)
-        run('spctl', '--assess', '--type', 'execute', '--verbose=2', APP)
-        if is_stapled(DMG):
-            run('spctl', '--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose=2', DMG)
-        report.append('distribution: Developer ID, stapled, Gatekeeper accepts the app')
+        report.append('distribution: Developer ID, stapled apps accepted by Gatekeeper')
+    return report
+
+
+def verify(args, public=None):
+    public = public or base64.b64decode(args.public_key or CONFIG['SPARKLE_PUBLIC_ED_KEY'])
+    info, archs = check_signed_app(APP, args.distribution)
+    report = [f'app: {info["CFBundleShortVersionString"]} ({info["CFBundleVersion"]}) {info["CFBundleIdentifier"]}, '
+              f'archs {" ".join(archs)}']
+    report.extend(check_artifacts(public, args.distribution))
     print('\n'.join('ok  ' + line for line in report))
 
 
@@ -425,58 +441,60 @@ def find_release():
     return next((r for r in releases if r['tag_name'] == TAG), None)
 
 
-def tag_problem():
-    """Why TAG is not a signed annotated tag that has been pushed; None when it is."""
+TAG_HINT = (f"Create and push the signed tag on the release commit first: git tag -s {TAG} -m '{APP_NAME} {VERSION}' "
+            f'&& git push origin {TAG}; then run publish --verify-tag.')
+
+
+def verify_pushed_tag(head, required):
+    """Require a valid pushed tag on HEAD, or return False if it may be absent."""
     ref = run('gh', 'api', f'repos/{REPO}/git/ref/tags/{TAG}', check=False, capture_output=True, text=True)
     if ref.returncode != 0:
         if 'HTTP 404' not in ref.stderr:
             raise Failure(f'Could not look up tag {TAG} on GitHub: {ref.stderr.strip()}')
-        return f'no tag {TAG} exists on GitHub'
+        if required:
+            raise Failure(f'No tag {TAG} exists on GitHub. {TAG_HINT}')
+        return False
     pushed = json.loads(ref.stdout)['object']
     if pushed['type'] != 'tag':
-        return f'{TAG} on GitHub is a lightweight tag, not an annotated one'
+        raise Failure(f'{TAG} on GitHub is a lightweight tag, not an annotated one.')
     local = output('git', 'rev-parse', '--verify', '--quiet', f'refs/tags/{TAG}', check=False)
     if local != pushed['sha']:
-        return f'{TAG} on GitHub ({pushed["sha"][:12]}) is not the local tag ({local[:12] or "none"})'
-    if run('git', 'verify-tag', TAG, check=False, capture_output=True).returncode != 0:
-        return f'git verify-tag does not accept a signature on {TAG}'
-    return None
-
-
-TAG_HINT = (f"Create and push the signed tag on the release commit first: git tag -s {TAG} -m '{APP_NAME} {VERSION}' "
-            f'&& git push origin {TAG}; then run publish --verify-tag.')
+        raise Failure(f'{TAG} on GitHub ({pushed["sha"][:12]}) is not the local tag ({local[:12] or "none"}).')
+    if run('git', 'verify-tag', local, check=False, capture_output=True).returncode != 0:
+        raise Failure(f'git verify-tag does not accept a signature on {TAG}.')
+    commit = output('git', 'rev-parse', '--verify', f'{local}^{{commit}}')
+    if commit != head:
+        raise Failure(f'{TAG} points at {commit[:12]}, not HEAD ({head[:12]}). Draft not changed.')
+    return True
 
 
 def publish(args):
     for path in (ZIP, DMG, SUMS):
         if not path.is_file():
             raise Failure(f'{path} is missing; run package first.')
+    if not FEED.is_file():
+        raise Failure(f'{FEED} is missing; run appcast first.')
     notes = args.notes or default_notes()
+    if not (ROOT / notes).is_file():
+        raise Failure(f'Release notes {notes} not found; pass --notes.')
+    head = output('git', 'rev-parse', 'HEAD')
+    pushed_tag = verify_pushed_tag(head, args.verify_tag)
     release = find_release()
     if release and not release['draft']:
         raise Failure(f'{TAG} is already published; bump VERSION.')
-    problem = tag_problem()
-    if problem and args.verify_tag:
-        raise Failure(f'{problem}. {TAG_HINT}')
-    head = output('git', 'rev-parse', 'HEAD')
-    if not problem and output('git', 'rev-parse', f'refs/tags/{TAG}^{{commit}}') != head:
-        print(f'warning: {TAG} does not point at HEAD ({head[:12]}); the release will be the tagged commit.', file=sys.stderr)
-    # With --verify-tag the release uses the pushed tag. Without it the draft targets HEAD, and
-    # publishing that draft makes GitHub create the tag itself when none exists (see the hint below).
-    target = [] if args.verify_tag else ['--target', head]
+    check_artifacts(base64.b64decode(CONFIG['SPARKLE_PUBLIC_ED_KEY']), distribution=True)
+    # An untagged draft targets HEAD, but publishing it now would create an unsigned tag.
+    target = [] if pushed_tag else ['--target', head]
     if release:
-        gh_release('edit', TAG, *target, '--notes-file', notes)
+        gh_release('edit', TAG, '--target', head, '--notes-file', notes)
     else:
         gh_release('create', TAG, '--draft', *(target or ['--verify-tag']), '--title', f'{APP_NAME} {VERSION}', '--notes-file', notes)
     gh_release('upload', TAG, ZIP, DMG, SUMS, '--clobber')
-    if not FEED.is_file():
-        raise Failure(f'{FEED} is missing; run appcast first.')
-    check_feed(FEED, base64.b64decode(CONFIG['SPARKLE_PUBLIC_ED_KEY']), ZIP)
     gh_release('upload', TAG, FEED, '--clobber')
     print(f'Draft {TAG} ready: {find_release()["html_url"]}')
-    if problem:
-        print(f'DO NOT PUBLISH THIS DRAFT YET: {problem}. Publishing it now would make GitHub create an '
-              f'unsigned lightweight tag, or release a tag that is not the signed one. {TAG_HINT}', file=sys.stderr)
+    if not pushed_tag:
+        print(f'DO NOT PUBLISH THIS DRAFT YET: no tag {TAG} exists on GitHub. Publishing it now would make GitHub '
+              f'create an unsigned lightweight tag. {TAG_HINT}', file=sys.stderr)
         return
     print(f'Next: review it, publish it (gh release edit {TAG} --draft=false --latest --repo {REPO}),')
     print('then run scripts/release.py promote and commit appcast.xml to main.')
@@ -544,8 +562,7 @@ def main():
             sub.add_argument('--public-key', help='Verify against this base64 key instead of SUPublicEDKey')
         if name == 'publish':
             sub.add_argument('--verify-tag', action='store_true',
-                             help='Release the signed annotated tag that is already pushed; refuse when it is missing, '
-                                  'lightweight, differs from the local tag or fails git verify-tag (the documented flow)')
+                             help='Require the signed annotated tag on HEAD to be pushed before preparing the draft')
         if name == 'promote':
             sub.add_argument('--from-release', action='store_true', help='Use the appcast.xml attached to the published release')
             sub.add_argument('--no-download-check', action='store_true',

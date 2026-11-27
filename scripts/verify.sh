@@ -1,9 +1,9 @@
 #!/bin/zsh
 # Everything a change must pass before it lands on main or gets tagged. Runs on
-# this Mac; there is no hosted CI. The package has one test target (Swift
-# Testing, Tests/HeadroomCoreChecks), which needs only the Command Line Tools,
-# so every test runs every time: no skips, no retries. Each step prints its
-# wall time so slow steps are visible.
+# this Mac; there is no hosted CI. The offline publish checks and the Swift
+# Testing target (Tests/HeadroomCoreChecks) need only the Command Line Tools.
+# Every test runs every time: no skips, no retries. Each step prints its wall
+# time so slow steps are visible.
 #
 #   ./scripts/verify.sh            # tests, universal build, release dry run
 #   ./scripts/verify.sh --quick    # tests only
@@ -26,6 +26,7 @@ step() {
   printf '    %s: %.1fs\n' "$name" $(( SECONDS - start ))
 }
 
+step "Release preflight checks" /usr/bin/python3 -B ./scripts/test-release.py
 step "Tests" ./scripts/check.sh
 if [[ "${1:-}" == "--quick" ]]; then printf 'verify (quick) passed in %.1fs\n' $(( SECONDS - total )); exit 0; fi
 

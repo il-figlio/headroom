@@ -102,10 +102,10 @@ and runs `tmutil` to count local snapshots. Agents is off by default; when
 on, it reads transcripts read-only, keeps only metadata, and lists
 processes with `/bin/ps`. Limits is opt-in on new installs; it reads
 existing Codex, Claude Code, and Ante sign-ins (including Claude Code's
-Keychain item, read without prompts and switchable off), calls the
-providers' unofficial usage endpoints, or runs `ante usage`. Sparkle checks
-daily with its system profile disabled, and a command-line diagnostic can
-ask GitHub's public releases API for the newest release.
+Keychain item only if macOS grants prompt-free access and Keychain use is
+on), calls the providers' unofficial usage endpoints, or runs `ante usage`.
+Sparkle checks daily with its system profile disabled, and a command-line
+diagnostic can ask GitHub's public releases API for the newest release.
 
 ## 4. History scan
 
@@ -207,15 +207,16 @@ on the release Mac instead.
 - [ ] Signing material stays in the release Mac's login Keychain (Developer ID
       certificate, notarytool profile, Sparkle key), backed up in a password
       manager. Nothing is stored as a GitHub secret.
-- [ ] The release script refuses to overwrite a published release, and the
-      appcast is committed only after the release assets exist and the
-      published archive has been downloaded and checked against it.
-- [ ] The release tag is a signed annotated tag, pushed before the release
-      is created, so the host never creates an unsigned tag for it.
+- [ ] The release script refuses to overwrite a published release or change
+      a draft before checking the local artifacts. Commit the appcast only
+      after downloading the published archive and checking it against the feed.
+- [ ] The release tag is a signed annotated tag at HEAD, pushed before the
+      release is made public, so the host never creates an unsigned tag.
 
-**Headroom:** `./scripts/verify.sh` runs the one Swift Testing target, a
-universal ad-hoc build, and an offline release dry run in a few minutes,
-most of it the build, with only the Command Line Tools installed.
+**Headroom:** `./scripts/verify.sh` runs the offline publish preflight checks,
+the Swift Testing target, a universal ad-hoc build, and an offline release
+dry run with only the Command Line Tools installed. Most of the time is
+spent on the build.
 `scripts/test-quit.sh` is the manual check: it launches a fixture app and a
 Headroom binary. Releases: [releases.md](releases.md).
 

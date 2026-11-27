@@ -48,6 +48,10 @@ if let index = CommandLine.arguments.firstIndex(of: "--test-quit-fixture"), Comm
     exit(result ? 0 : 1)
 }
 
+if CommandLine.arguments.contains("--history-dir") {
+    print(HistoryStore.defaultDirectory.path); exit(0)
+}
+
 // Everything below may read or write the data folder. A copy that is already
 // running (builds up to 0.8.0 have the same bundle identifier) may have the
 // legacy database open, so files move only when this is the only one: the same
@@ -57,11 +61,11 @@ let runningCopies = Bundle.main.bundleIdentifier.map {
 } ?? []
 let migration = HistoryStore.legacyMigrationDecision(ownPID: getpid(), runningPIDs: runningCopies,
                                                      pending: HistoryStore.legacyMigrationPending())
-if migration == .migrate { HistoryStore.migrateLegacyDirectory() }
-
-if CommandLine.arguments.contains("--history-dir") {
-    print(HistoryStore.defaultDirectory.path); exit(0)
+if migration == .migrate, HistoryStore.migrateLegacyDirectory() == .blocked {
+    FileHandle.standardError.write(Data("Headroom history migration is incomplete. Quit other copies, check folder access and available space, then retry.\n".utf8))
+    exit(1)
 }
+
 if migration == .wait {
     // The running copy still has this app's history in the legacy folder.
     // Opening the new folder now would start an empty history there, and the
