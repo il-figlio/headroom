@@ -171,6 +171,21 @@ public final class HistoryStore {
 
     public enum MigrationOutcome { case notNeeded, completed, blocked }
 
+    /// Thrown instead of opening history while `migrateLegacyDirectory` is
+    /// blocked: a new history.sqlite in the new folder would keep the old one
+    /// from ever moving there. The next launch tries the move again.
+    public struct MoveBlocked: LocalizedError {
+        public let legacy: URL
+        public let current: URL
+        public init(legacy: URL = HistoryStore.legacyDirectory, current: URL = HistoryStore.defaultDirectory) {
+            self.legacy = legacy; self.current = current
+        }
+        public var errorDescription: String? {
+            func short(_ url: URL) -> String { (url.path as NSString).abbreviatingWithTildeInPath }
+            return "History is off for now because Headroom couldn't finish moving it from \(short(legacy)) to \(short(current)). Quit any other copies of Headroom, check that both folders can be opened and that the disk has free space, then open Headroom again."
+        }
+    }
+
     /// Moves this app's files (history, quota cache, kept archives, log) out of
     /// the legacy folder. Does nothing unless
     /// the legacy log.md is this app's, and then only when the new folder has no

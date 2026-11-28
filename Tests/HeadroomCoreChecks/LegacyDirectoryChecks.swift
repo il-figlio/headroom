@@ -276,6 +276,15 @@ import Testing
         #expect(try FileManager.default.contentsOfDirectory(atPath: current.path).isEmpty)
     }
 
+    /// What Settings and the History window show while the move is blocked.
+    @Test func blockedMoveExplainsItselfWithBothFolders() {
+        let message = HistoryStore.MoveBlocked().localizedDescription
+        #expect(message.contains("~/Library/Application Support/Headroom to ~/Library/Application Support/org.headroom.app"))
+        #expect(message.contains("Quit any other copies of Headroom"))
+        #expect(message.contains("then open Headroom again."))
+        #expect(!message.contains(NSHomeDirectory()))
+    }
+
     @Test func aRunningCopyDecidesWhetherThisLaunchMoves() {
         var asked = 0
         func pending(_ value: Bool) -> Bool { asked += 1; return value }

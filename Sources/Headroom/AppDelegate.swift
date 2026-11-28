@@ -12,6 +12,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private let windows = UtilityWindows()
     private let settingsRouter = SettingsRouter()
     private var eventMonitors: [Any] = []
+    /// This launch couldn't finish moving history out of the legacy folder.
+    private let historyMoveBlocked: Bool
+
+    init(historyMoveBlocked: Bool) {
+        self.historyMoveBlocked = historyMoveBlocked
+        super.init()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // One instance only, including launching a copied build.
@@ -22,7 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         NSApp.setActivationPolicy(.accessory)
         // Settles first-launch state before anything this launch writes preferences.
         let preferences = AppPreferences.shared
-        monitor = MemoryMonitor()
+        monitor = MemoryMonitor(historyMoveBlocked: historyMoveBlocked)
         if let icon = AppBrand.icon { NSApp.applicationIconImage = icon }
         status = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         status.button?.target = self; status.button?.action = #selector(togglePanel)

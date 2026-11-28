@@ -205,9 +205,9 @@ private struct HistorySettings: View {
             } footer: {
                 Caption("About one reading a minute, kept for 30 days in ~/Library/Application Support/org.headroom.app. It stays on this Mac. With history off, the live readings still work.")
             }
-            if let error = monitor.historyError {
+            if let problem = monitor.historyProblem {
                 Section {
-                    Label("History couldn't be saved: \(error)", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    Label(problem, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                 }
             }
             Section {

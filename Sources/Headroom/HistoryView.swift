@@ -19,8 +19,8 @@ struct HistoryView: View {
                     Label("History is paused. The live memory indicator still works.", systemImage: "pause.circle")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
-                if let error = monitor.historyError {
-                    Label("History couldn't be saved: \(error)", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                if let problem = monitor.historyProblem {
+                    Label(problem, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                 }
                 HStack(spacing: 24) {
                     stat("Observed", "\(Int(monitor.trends.observedMinutes.rounded())) min")

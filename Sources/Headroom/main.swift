@@ -61,7 +61,12 @@ let runningCopies = Bundle.main.bundleIdentifier.map {
 } ?? []
 let migration = HistoryStore.legacyMigrationDecision(ownPID: getpid(), runningPIDs: runningCopies,
                                                      pending: HistoryStore.legacyMigrationPending())
-if migration == .migrate, HistoryStore.migrateLegacyDirectory() == .blocked {
+let commandLineNeedsHistory = !Set(CommandLine.arguments).isDisjoint(with: ["--scan", "--capture", "--report"])
+// A blocked move is retried by the next launch. The command-line modes need
+// the data folder and stop; the app runs without history until then, since a
+// Finder, Dock or login launch has no terminal to explain an exit.
+let historyMoveBlocked = migration == .migrate && HistoryStore.migrateLegacyDirectory() == .blocked
+if historyMoveBlocked, commandLineNeedsHistory {
     FileHandle.standardError.write(Data("Headroom history migration is incomplete. Quit other copies, check folder access and available space, then retry.\n".utf8))
     exit(1)
 }
@@ -71,7 +76,7 @@ if migration == .wait {
     // Opening the new folder now would start an empty history there, and the
     // move never replaces one. AppDelegate would end this launch anyway;
     // leaving here also covers the other copy quitting in between.
-    if !Set(CommandLine.arguments).isDisjoint(with: ["--scan", "--capture", "--report"]) {
+    if commandLineNeedsHistory {
         FileHandle.standardError.write(Data("Headroom is running and its history hasn't moved to \(HistoryStore.defaultDirectory.path) yet. Quit Headroom, then run this again.\n".utf8))
         exit(1)
     }
@@ -109,6 +114,6 @@ if CommandLine.arguments.contains("--capture") || CommandLine.arguments.contains
 }
 
 let app = NSApplication.shared
-let delegate = AppDelegate()
+let delegate = AppDelegate(historyMoveBlocked: historyMoveBlocked)
 app.delegate = delegate
 app.run()

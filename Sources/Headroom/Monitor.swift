@@ -97,6 +97,14 @@ final class MemoryMonitor: ObservableObject {
     /// Non-nil while a consumer scan runs; shows progress for the storage view.
     @Published private(set) var consumerScanText: String?
     @Published private(set) var historyError: String?
+    /// The move out of the legacy folder didn't finish at launch, so this
+    /// launch never opens history (see `openStore`); the next launch retries.
+    let historyMoveBlocked: Bool
+    /// `historyError` as Settings and the History window show it.
+    var historyProblem: String? {
+        guard let historyError else { return nil }
+        return historyMoveBlocked ? historyError : "History couldn't be saved: \(historyError)"
+    }
     /// Main-owned. The latest record() and agent load/commit outcomes behind
     /// `historyError`, tracked apart so a successful agent commit clears only
     /// its own error and a successful record() doesn't hide a failing commit.
@@ -162,8 +170,9 @@ final class MemoryMonitor: ObservableObject {
     private var recordedPressure: Pressure = .unknown
     private var iconCache: [String: NSImage?] = [:]
 
-    init(preview: Bool = false, machine: ScreenshotFixtures.Machine = .laptop) {
+    init(preview: Bool = false, machine: ScreenshotFixtures.Machine = .laptop, historyMoveBlocked: Bool = false) {
         isPreview = preview
+        self.historyMoveBlocked = historyMoveBlocked && !preview
         if preview {
             placement = .automatic; historyEnabled = true
             let demo = ScreenshotFixtures(machine: machine)
@@ -197,8 +206,7 @@ final class MemoryMonitor: ObservableObject {
             // Off: a cache left by an earlier launch (or an earlier build) goes too.
             if limitsEnabled { self.loadQuotaCache() } else { QuotaCache.remove(Self.quotaCacheURL) }
             do {
-                let store = try HistoryStore()
-                self.historyStore = store
+                let store = try self.openStore()
                 let summary = try store.summary()
                 DispatchQueue.main.async {
                     self.trends = summary
@@ -320,8 +328,7 @@ final class MemoryMonitor: ObservableObject {
                 self.lastRecordedAt = date
                 self.recordedPressure = memory.pressure
                 do {
-                    if self.historyStore == nil { self.historyStore = try HistoryStore() }
-                    trends = try self.historyStore?.record(memory: memory, apps: ObservedApp.from(apps), disk: disk, at: date)
+                    trends = try self.openStore().record(memory: memory, apps: ObservedApp.from(apps), disk: disk, at: date)
                 } catch { historyError = error.localizedDescription }
                 SamplingTrace.end(recordTrace)
             }
@@ -444,7 +451,8 @@ final class MemoryMonitor: ObservableObject {
         agentOffsets = scan.offsets
         agentIdentities = scan.identities
         mergeAgentBurn(scan.usage, now: now)
-        let error = historyEnabled ? loadError.map { "Couldn't load saved agent sessions, so they aren't being saved: \($0)" } : nil
+        // A blocked move already explains itself.
+        let error = historyEnabled ? loadError.map { historyMoveBlocked ? $0 : "Couldn't load saved agent sessions, so they aren't being saved: \($0)" } : nil
         return (scan.snapshot, agentBurnBuckets, error)
     }
 
@@ -455,8 +463,7 @@ final class MemoryMonitor: ObservableObject {
     private func loadAgentStateIfNeeded(now: Date) -> String? {
         guard !agentStateLoaded else { return nil }
         do {
-            if historyStore == nil { historyStore = try HistoryStore() }
-            guard let store = historyStore else { return "History is unavailable." }
+            let store = try openStore()
             let sessions = try store.loadAgentSessions()
             let offsets = try store.loadScanOffsets()
             let identities = try store.loadScanIdentities()
@@ -566,13 +573,24 @@ final class MemoryMonitor: ObservableObject {
         }
     }
 
+    /// Queue-confined. Every use of history goes through here. While the
+    /// legacy move is blocked it throws `MoveBlocked` without touching disk:
+    /// opening would create a history.sqlite in the new folder, and the move
+    /// never replaces one, so the old history would stay behind for good.
+    private func openStore() throws -> HistoryStore {
+        if let historyStore { return historyStore }
+        if historyMoveBlocked { throw HistoryStore.MoveBlocked() }
+        let store = try HistoryStore()
+        historyStore = store
+        return store
+    }
+
     private func recordEvent(_ kind: String, app: String, detail: String) {
         guard historyEnabled else { return }
         queue.async { [weak self] in
             do {
                 guard let self else { return }
-                if self.historyStore == nil { self.historyStore = try HistoryStore() }
-                try self.historyStore?.event(kind: kind, app: app, detail: detail)
+                try self.openStore().event(kind: kind, app: app, detail: detail)
             } catch { DispatchQueue.main.async { self?.historyError = error.localizedDescription } }
         }
     }
@@ -582,8 +600,12 @@ final class MemoryMonitor: ObservableObject {
         let url = HistoryStore.defaultDirectory.appendingPathComponent("log.md")
         queue.async { [weak self] in
             if let self {
-                if self.historyStore == nil { self.historyStore = try? HistoryStore() }
-                try? self.historyStore?.refreshLog(now: Date())
+                do { try self.openStore().refreshLog(now: Date()) }
+                catch let error as HistoryStore.MoveBlocked {
+                    // There is no log in the new folder yet; say why instead.
+                    DispatchQueue.main.async { self.historyError = error.localizedDescription }
+                    return
+                } catch {}
             }
             DispatchQueue.main.async { NSWorkspace.shared.open(url) }
         }
@@ -641,8 +663,7 @@ final class MemoryMonitor: ObservableObject {
             }
             self.queue.async {
                 do {
-                    if self.historyStore == nil { self.historyStore = try HistoryStore() }
-                    try self.historyStore?.saveConsumers(result.consumers, localSnapshots: result.localSnapshots)
+                    try self.openStore().saveConsumers(result.consumers, localSnapshots: result.localSnapshots)
                     let scan = (try? self.historyStore?.loadConsumers()) ?? ConsumerScan()
                     let summary = try? self.historyStore?.summary()
                     DispatchQueue.main.async {
@@ -670,8 +691,7 @@ final class MemoryMonitor: ObservableObject {
         queue.async { [weak self] in
             do {
                 guard let self else { return }
-                if self.historyStore == nil { self.historyStore = try HistoryStore() }
-                _ = try self.historyStore?.archive()
+                _ = try self.openStore().archive()
                 self.lastRecordedAt = .distantPast
                 DispatchQueue.main.async { self.trends = TrendSummary(); self.sample() }
             } catch { DispatchQueue.main.async { self?.historyError = error.localizedDescription } }
