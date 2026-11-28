@@ -730,7 +730,8 @@ final class MemoryMonitor: ObservableObject {
                 guard let self else { return }
                 _ = try self.openStore().archive()
                 self.lastRecordedAt = .distantPast
-                DispatchQueue.main.async { self.trends = TrendSummary(); self.sample() }
+                // The new database has no storage scan yet; don't keep showing the archived one.
+                DispatchQueue.main.async { self.trends = TrendSummary(); self.consumers = ConsumerScan(); self.sample() }
             } catch { DispatchQueue.main.async { self?.historyError = error.localizedDescription } }
         }
     }
