@@ -71,19 +71,21 @@ held in memory and deletes `quota-cache.json`.
   `~/.codex/auth.json` (read-only) and asks
   `chatgpt.com/backend-api/wham/usage` for the plan, rate-limit windows, and
   credits. An API-key-only sign-in has no plan limits to show.
-- **Claude** uses Claude Code's sign-in: `~/.claude/.credentials.json` if
-  that file exists, otherwise the `Claude Code-credentials` item in your
-  login Keychain. Headroom also accepts Ante's original single-file sign-in,
-  `~/.ante/auth/credentials/oauth/anthropic.json`. It asks
-  `api.anthropic.com/api/oauth/usage` for the 5-hour window, the weekly
-  window, and model-specific weekly windows (for example Sonnet or Opus)
-  when Anthropic reports them.
+- **Claude** uses the first sign-in that has an unexpired token, in this
+  order: Claude Code's `~/.claude/.credentials.json`, Ante's original
+  single-file sign-in `~/.ante/auth/credentials/oauth/anthropic.json`, and
+  then, when neither file gives a usable token (missing, in a format
+  Headroom doesn't read, or expired), the `Claude Code-credentials` item in
+  your login Keychain. It asks `api.anthropic.com/api/oauth/usage` for the
+  5-hour window, the weekly window, and model-specific weekly windows (for
+  example Sonnet or Opus) when Anthropic reports them.
 - **Keychain without prompts.** Headroom checks that the Keychain item
   exists without reading it, and reads the token only to make the usage
   request. The read never shows a Keychain prompt: if macOS would need to
   ask you, it fails quietly and Limits says Claude usage is unavailable.
   **Use Claude Code's Keychain sign-in** in Settings → Limits (on by
-  default) turns Keychain use off entirely.
+  default) turns Keychain use off entirely, and turning it off drops a
+  token that came from the Keychain right away.
 - **Sign-in changes.** Headroom notices a changed sign-in from the
   modification time of the file or Keychain item, without reading the
   secret to check. It notices on the next poll even when the previous token
@@ -109,7 +111,10 @@ held in memory and deletes `quota-cache.json`.
   shown. A response that can't be decoded at all is reported as an
   unexpected response, not as a network error.
 - **Nothing without a sign-in.** If no provider sign-in exists, nothing is
-  fetched and the card stays hidden.
+  fetched and the card stays hidden. When the last sign-in goes away while
+  Limits is on (you signed out of the tools, or turned off Keychain use and
+  the Keychain item was the only sign-in), the card is cleared,
+  `quota-cache.json` is deleted, and anything held in memory is forgotten.
 
 ### Supported and not supported
 
@@ -142,10 +147,11 @@ is off, Headroom does no agent scanning at all.
   part-hour after local midnight is counted with the previous day.
 - **Provider-agnostic.** Headroom watches the folders coding agents keep
   their session transcripts in (`~/.claude`, `~/.codex`, `~/.openclaw`,
-  `~/.devin`, and the folders used by Goose, opencode, Aider, Gemini,
-  Cursor, Windsurf, Amp, Continue, and Codeium). Claude Code, Codex, and
-  OpenClaw have dedicated readers; any other JSONL transcript goes through a
-  generic reader.
+  `~/.devin`, `~/.local/share/devin`, and the folders used by Goose,
+  opencode, Aider, Gemini, Cursor, Windsurf, Amp, Continue, and Codeium;
+  [PRIVACY.md](../PRIVACY.md#agents-off-by-default) lists every path).
+  Claude Code, Codex, and OpenClaw have dedicated readers; any other JSONL
+  transcript goes through a generic reader.
 - **Incremental.** Transcripts are append-only, so Headroom resumes each file
   at its last complete line and only reads new data, at most 2 MB per file
   per scan. A partially written line is read once it is complete. Offsets,
@@ -154,8 +160,11 @@ is off, Headroom does no agent scanning at all.
   45 seconds, or every 15 seconds while the panel is open.
 - **Counted once.** A Claude Code message that appears on several transcript
   lines, or that is copied into a resumed session's transcript, is counted
-  once. Codex totals count cached input and reasoning output once, not a
-  second time on top of the input and output that already include them.
+  once while Headroom keeps running. Headroom remembers only the most
+  recent 20,000 responses, in memory, so a copy that arrives after a
+  relaunch, or after 20,000 newer responses, is counted again. Codex
+  totals count cached input and reasoning output once, not a second time
+  on top of the input and output that already include them.
 - **Live health.** Transcripts are matched to running processes, which are
   listed with `/bin/ps` under a time limit: `live`, `stuck` (process alive
   but transcript quiet for 10 minutes), `zombie` (file grew with no
@@ -169,7 +178,13 @@ is off, Headroom does no agent scanning at all.
   lower bound.
 - **Retention.** Hourly token totals older than 30 days are deleted. A
   session's stored metadata (its project folder and transcript path
-  included) is deleted 30 days after the session's last activity.
+  included) is deleted 30 days after the session's last activity. Both
+  happen when the database opens (every launch) and once a day while
+  Headroom records history. With history on, each agent scan also drops
+  expired sessions when it saves, and expired hourly totals whenever it
+  adds new ones. The read position and identity kept for each transcript
+  stay while the file exists or its session is saved; only an agent scan
+  with history on removes them.
 - **Tool categories.** Raw tool names (`Bash`, `exec_command`,
   `send_message`, `mcp__*`) collapse into categories so usage compares
   across agents.
@@ -194,11 +209,12 @@ is off, Headroom does no agent scanning at all.
   every minute while recording, plus extra samples when pressure changes.
   Sleep and downtime gaps are excluded from trends.
 - **30-day retention.** Samples, events, hourly agent totals, and agent
-  session rows older than 30 days are pruned while recording and every
-  time the database is opened, which happens at every launch even when
-  recording is paused. Archives, the last consumer scan, and preferences
-  are not pruned: they stay until you delete them (or, for the scan, until
-  you scan again).
+  session rows older than 30 days are pruned every time the database is
+  opened, which happens at every launch even when recording is paused, and
+  while recording: samples and events with every sample, agent rows once a
+  day (agent scans also prune them, as described under Agents). Archives,
+  the last consumer scan, and preferences are not pruned: they stay until
+  you delete them (or, for the scan, until you scan again).
 - A `log.md` report (summary, daily readings, app footprints, disk
   consumers, recommendations, pressure transitions, and quit outcomes) is
   rewritten at most every 15 minutes, and immediately when you open it.
@@ -215,7 +231,7 @@ a leak, and partial readings are labeled as partial.
 ~/Library/Application Support/org.headroom.app/
 ├── history.sqlite     # samples, events, disk consumers, agent sessions (WAL)
 ├── log.md             # generated report
-├── quota-cache.json   # last Limits readings; deleted when Limits is turned off
+├── quota-cache.json   # last Limits readings; deleted when Limits is off or no sign-in is left
 └── Archives/
     └── <timestamp>-<id>/   # an archived history.sqlite and log.md
 ```
@@ -230,6 +246,20 @@ the `Archives` folder. It does so only if the `log.md` there was written by
 this app, because an unrelated app uses the same folder name. A move that
 was interrupted is finished on the next launch, and the move is skipped
 while another copy of Headroom is running.
+
+If `~/Library/Application Support/Headroom` is a file, or its `log.md` is
+missing or can't be read, Headroom treats the folder as not its own and
+leaves it alone. A damaged old database is moved as it is, together with
+its `-wal` and `-shm` files. A stray `history.sqlite-wal` or
+`history.sqlite-shm` in the new folder with no database beside it is
+renamed to `<name>.orphaned-<timestamp>` and kept, so it can't pair with
+the database that arrives.
+
+If the move can't be finished (for example, the old database is in use or
+the disk is full), Headroom still opens, but history is off for that
+launch. Settings → History and the Trends window say why and what to do,
+and the next launch tries the move again. `--scan`, `--capture` and
+`--report` exit with an error while the move is blocked.
 
 ## Resource cost
 

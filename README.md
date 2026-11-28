@@ -86,10 +86,12 @@ is read, stored, and sent.
 
 ## Updates
 
-Headroom updates itself with [Sparkle](https://sparkle-project.org). It
-checks once a day, and every update is signed and verified before it's
-installed. You can turn off automatic checks or automatic installation in
-Headroom's settings, and check manually at any time.
+Headroom updates itself with [Sparkle](https://sparkle-project.org). By
+default it checks once a day (the first check can happen shortly after you
+first open it), downloads and installs a signed update automatically, and
+may quit and relaunch itself to finish. Every update is signed and verified
+before it's installed. You can turn off automatic checks or automatic
+installation in Settings → Updates, and check manually at any time.
 
 ## Uninstall
 

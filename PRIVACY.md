@@ -58,9 +58,11 @@ with macOS as a login item.
 ## Agents (off by default)
 
 When you turn on the Agents widget, Headroom looks for coding-agent session
-transcripts in the folders those tools use, such as `~/.claude`, `~/.codex`,
-`~/.openclaw`, `~/.devin`, `~/.gemini`, `~/.cursor`, `~/.codeium`, and
-folders under `~/.config` for Goose, opencode, Amp, and Continue.
+transcripts in these folders, if they exist: `~/.claude`, `~/.codex`,
+`~/.openclaw`, `~/.devin`, `~/.local/share/devin`, `~/.aider-desk`,
+`~/.gemini`, `~/.config/goose`, `~/.config/opencode`, `~/.config/amp`,
+`~/.config/continue`, `~/.cursor`, `~/.windsurf`, `~/.amp`, and
+`~/.codeium`.
 
 - Transcripts are opened **read-only**. Headroom never modifies them and
   writes nothing into agent folders.
@@ -75,9 +77,21 @@ folders under `~/.config` for Goose, opencode, Amp, and Continue.
 - Session metadata, the transcript file paths, and hourly token totals are
   stored in the local history database. Hourly totals older than 30 days
   are deleted, and a session's row (its project folder and transcript path
-  included) is deleted 30 days after the session's last activity.
+  included) is deleted 30 days after the session's last activity. This
+  happens each time Headroom opens the database (at every launch) and once
+  a day while Headroom records history. While Agents and history are both
+  on, each agent scan also drops expired sessions when it saves, and
+  expired hourly totals whenever it adds new ones.
+- So that it doesn't read a transcript again, Headroom also stores, for
+  each transcript it has read, the file's path, how far it has read, and
+  the file's identity. This entry stays as long as the transcript file
+  exists or its session is still saved. Entries are removed only by an
+  agent scan that saves its results, which needs Agents and history both
+  on, so with Agents off they remain until you turn Agents on again (with
+  history on) or delete the database.
 
-While Agents is off, none of this happens.
+While Agents is off, Headroom reads no transcripts and stores nothing new
+about them.
 
 ## Limits (off until you turn it on)
 
@@ -99,9 +113,9 @@ which Headroom doesn't do.
 | Provider | What Headroom reads | Where it connects |
 | --- | --- | --- |
 | Codex (ChatGPT plan) | `~/.codex/auth.json`, written by the Codex CLI, opened read-only: the access token and account ID | `https://chatgpt.com/backend-api/wham/usage` |
-| Claude (Claude Code sign-in, file) | `~/.claude/.credentials.json`, if it exists: the access token, its expiry, and the plan name | `https://api.anthropic.com/api/oauth/usage` |
-| Claude (Claude Code sign-in, Keychain) | If that file doesn't exist, the `Claude Code-credentials` item in your login Keychain. Headroom checks that the item exists and when it last changed without reading its contents, and reads the token only to make the usage request. It never shows a Keychain prompt. Turn this off with **Use Claude Code's Keychain sign-in** in Settings → Limits (on by default) | `https://api.anthropic.com/api/oauth/usage` |
-| Claude (Ante single sign-in) | `~/.ante/auth/credentials/oauth/anthropic.json`, Ante's original single-file sign-in, if it exists | `https://api.anthropic.com/api/oauth/usage` |
+| Claude (Claude Code sign-in, file) | `~/.claude/.credentials.json`, if it exists: the access token, its expiry, and the plan name. Tried first | `https://api.anthropic.com/api/oauth/usage` |
+| Claude (Ante single sign-in) | `~/.ante/auth/credentials/oauth/anthropic.json`, Ante's original single-file sign-in, if it exists. Tried second | `https://api.anthropic.com/api/oauth/usage` |
+| Claude (Claude Code sign-in, Keychain) | The `Claude Code-credentials` item in your login Keychain, read only when neither file gives a usable token (missing, in a format Headroom doesn't read, or expired). Headroom checks that the item exists and when it last changed without reading its contents, and reads the token only to make the usage request. It never shows a Keychain prompt. Turn this off with **Use Claude Code's Keychain sign-in** in Settings → Limits (on by default) | `https://api.anthropic.com/api/oauth/usage` |
 | Claude accounts in Ante (for example Personal and Work) | Requires the Ante CLI at `~/.ante/bin/ante`. Headroom lists only the **file names** in `~/.ante/auth/credentials/oauth/anthropic/`, which are the account names. The files themselves aren't opened | No direct connection. Headroom runs `~/.ante/bin/ante usage anthropic/<account> --json`, stops it after 20 seconds, and Ante fetches the usage itself |
 
 Details:
@@ -115,7 +129,8 @@ Details:
 - The Keychain is never read in a way that can prompt you: if macOS would
   need to ask for permission, the read fails and Limits shows that Claude
   usage is unavailable. With **Use Claude Code's Keychain sign-in** turned
-  off, Headroom doesn't touch the Keychain at all.
+  off, Headroom doesn't touch the Keychain at all, and turning it off drops
+  a token that came from the Keychain right away.
 - When a sign-in changes (for example, after Claude Code renews it or you
   sign in to a different account), Headroom notices from the file's or
   Keychain item's modification time, without reading the secret to check.
@@ -130,7 +145,10 @@ Details:
 - The latest readings (plan name, usage percentages, reset times, account
   names, and credit balance) are saved to `quota-cache.json` in Headroom's
   data folder so they show instantly after relaunch. No tokens are saved.
-  The file is deleted when you turn Limits off.
+  The file is deleted when you turn Limits off, and also while Limits is on
+  once no sign-in is left (you signed out of the tools, or turned off
+  Keychain use and the Keychain item was the only sign-in); the Limits card
+  is then cleared and anything held in memory is forgotten.
 - Polling happens about every 15 minutes and when you open the panel, and
   stops while a provider asks Headroom to back off (rate limits are
   honored).
@@ -145,8 +163,11 @@ nothing else is affected.
 ## Update checks
 
 Headroom uses [Sparkle](https://sparkle-project.org) for updates. By
-default it checks once a day. You can turn off automatic checks and
-automatic installation in Headroom's settings, and still check manually.
+default it checks once a day, and the first check can happen shortly after
+you first open Headroom. When it finds a newer version, it downloads and
+installs the signed update automatically, and may quit and relaunch itself
+to finish. You can turn off automatic checks and automatic installation in
+Settings → Updates, and still check manually.
 
 - An update check downloads Headroom's update feed (`appcast.xml`) from
   GitHub. If a newer version is listed, Headroom downloads the update

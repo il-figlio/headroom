@@ -104,8 +104,10 @@ processes with `/bin/ps`. Limits is opt-in on new installs; it reads
 existing Codex, Claude Code, and Ante sign-ins (including Claude Code's
 Keychain item only if macOS grants prompt-free access and Keychain use is
 on), calls the providers' unofficial usage endpoints, or runs `ante usage`.
-Sparkle checks daily with its system profile disabled, and a command-line
-diagnostic can ask GitHub's public releases API for the newest release.
+Sparkle checks daily and installs signed updates automatically by default
+(both can be turned off in Settings → Updates), with its system profile
+disabled, and a command-line diagnostic can ask GitHub's public releases
+API for the newest release.
 
 ## 4. History scan
 
