@@ -250,16 +250,127 @@ import Testing
         try expectFullyMoved(legacy, current)
     }
 
-    @Test func checkpointErrorKeepsDatabaseAndMarkerForRetry() throws {
+    /// A file that starts like a database but isn't one (SQLITE_NOTADB) won't
+    /// become readable by waiting, so it moves as it is.
+    @Test func notADatabaseMovesAsAPlainFile() throws {
         let (legacy, current) = try scratch()
         defer { try? FileManager.default.removeItem(at: legacy.deletingLastPathComponent()) }
         try write("# Headroom observations", "log.md", in: legacy)
-        let corrupt = "SQLite format 3\0" + String(repeating: "x", count: 200)
-        try write(corrupt, "history.sqlite", in: legacy)
-        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .blocked)
-        #expect(text(legacy, "history.sqlite") == corrupt)
-        #expect(exists(current, marker))
-        #expect(!exists(current, "history.sqlite"))
+        let damaged = "SQLite format 3\0" + String(repeating: "x", count: 200)
+        try write(damaged, "history.sqlite", in: legacy)
+        #expect(HistoryStore.foldWriteAheadLog(legacy.appendingPathComponent("history.sqlite")) == .plainFiles)
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .completed)
+        #expect(text(current, "history.sqlite") == damaged)
+        #expect(!exists(current, marker))
+        #expect(!exists(legacy))
+    }
+
+    /// A real database with a damaged page (SQLITE_CORRUPT) and its sidecars
+    /// end up together in the new folder, untouched, rather than blocking
+    /// every launch.
+    @Test func corruptDatabaseMovesWithItsSidecars() throws {
+        let (legacy, current) = try scratch()
+        defer { try? FileManager.default.removeItem(at: legacy.deletingLastPathComponent()) }
+        try legacyInstall(legacy)
+        // Fold and close a copy so the main file holds every page, then break
+        // page 1's b-tree header (byte 100): the 16-byte header stays valid.
+        let database = legacy.appendingPathComponent("history.sqlite")
+        do {
+            let store = try HistoryStore(directory: legacy, now: base)
+            try store.executeForTesting("PRAGMA wal_checkpoint(TRUNCATE)")
+        }
+        var bytes = try Data(contentsOf: database)
+        bytes.replaceSubrange(100..<108, with: Data(repeating: 0xEE, count: 8))
+        try bytes.write(to: database)
+        try write("wal bytes", "history.sqlite-wal", in: legacy)
+        try write("shm bytes", "history.sqlite-shm", in: legacy)
+        #expect(HistoryStore.foldWriteAheadLog(database) == .plainFiles)
+        // The failed fold leaves all three files as they were.
+        #expect(try Data(contentsOf: database) == bytes)
+        #expect(text(legacy, "history.sqlite-wal") == "wal bytes")
+
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .completed)
+        #expect(try Data(contentsOf: current.appendingPathComponent("history.sqlite")) == bytes)
+        #expect(text(current, "history.sqlite-wal") == "wal bytes")
+        // The -shm is SQLite's index of the -wal, rebuilt by any open.
+        #expect(exists(current, "history.sqlite-shm"))
+        #expect(text(current, "quota-cache.json") == "{}")
+        #expect(text(current, "log.md")?.hasPrefix("# Headroom observations") == true)
+        #expect(!exists(current, marker))
+        #expect(!exists(legacy))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .notNeeded)
+    }
+
+    /// A -wal with no database in the new folder can't belong to the one that
+    /// is moving. It is kept under another name instead of blocking the move.
+    @Test func orphanSidecarsInTheNewFolderMoveAside() throws {
+        let (legacy, current) = try scratch()
+        defer { try? FileManager.default.removeItem(at: legacy.deletingLastPathComponent()) }
+        try legacyInstall(legacy)
+        try write("orphan wal", "history.sqlite-wal", in: current)
+        try write("orphan shm", "history.sqlite-shm", in: current)
+        #expect(HistoryStore.legacyMigrationPending(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .completed)
+        try expectFullyMoved(legacy, current)
+        let names = try FileManager.default.contentsOfDirectory(atPath: current.path)
+        let wal = try #require(names.first { $0.hasPrefix("history.sqlite-wal.orphaned-") })
+        let shm = try #require(names.first { $0.hasPrefix("history.sqlite-shm.orphaned-") })
+        #expect(text(current, wal) == "orphan wal")
+        #expect(text(current, shm) == "orphan shm")
+    }
+
+    /// Application Support/Headroom is a file: nothing of this app's is there
+    /// (ENOTDIR), so the launch goes ahead and the file is left alone.
+    @Test func legacyPathThatIsAFileIsNotOurs() throws {
+        let (legacy, current) = try scratch()
+        defer { try? FileManager.default.removeItem(at: legacy.deletingLastPathComponent()) }
+        try Data("not a folder".utf8).write(to: legacy)
+        #expect(!HistoryStore.legacyMigrationPending(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .notNeeded)
+        #expect(try String(contentsOf: legacy, encoding: .utf8) == "not a folder")
+        #expect(!exists(current))
+        // A marker from an interrupted move is cleared without touching the file.
+        try write("moving", marker, in: current)
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .notNeeded)
+        #expect(!exists(current, marker))
+        #expect(try String(contentsOf: legacy, encoding: .utf8) == "not a folder")
+    }
+
+    /// A log.md this user can't read (EACCES) isn't a history 0.8.0 wrote for
+    /// them: not needed, and nothing in either folder changes.
+    @Test func unreadableLogIsNotOurs() throws {
+        let (legacy, current) = try scratch()
+        let log = legacy.appendingPathComponent("log.md")
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: log.path)
+            try? FileManager.default.removeItem(at: legacy.deletingLastPathComponent())
+        }
+        try write("# Headroom observations", "log.md", in: legacy)
+        try write("db", "history.sqlite", in: legacy)
+        try write("{}", "quota-cache.json", in: legacy)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: log.path)
+        // Root reads anything; the case can't be set up there.
+        guard access(log.path, R_OK) != 0 else { return }
+        #expect(!HistoryStore.legacyMigrationPending(from: legacy, to: current))
+        #expect(HistoryStore.migrateLegacyDirectory(from: legacy, to: current) == .notNeeded)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: legacy.path).sorted() == ["history.sqlite", "log.md", "quota-cache.json"])
+        #expect(text(legacy, "history.sqlite") == "db")
+        #expect(!exists(current))
+    }
+
+    @Test func logOpenErrorsThatMeanNothingIsOurs() {
+        func cocoa(_ code: Int, posix: Int32?) -> NSError {
+            NSError(domain: NSCocoaErrorDomain, code: code,
+                    userInfo: posix.map { [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int($0))] } ?? [:])
+        }
+        #expect(HistoryStore.isNotReadableLog(cocoa(NSFileNoSuchFileError, posix: ENOENT)))
+        #expect(HistoryStore.isNotReadableLog(cocoa(NSFileWriteUnknownError, posix: ENOTDIR)))
+        #expect(HistoryStore.isNotReadableLog(cocoa(NSFileWriteNoPermissionError, posix: EACCES)))
+        #expect(HistoryStore.isNotReadableLog(cocoa(NSFileReadNoSuchFileError, posix: nil)))
+        // Anything else may pass: the move waits for a later launch.
+        #expect(!HistoryStore.isNotReadableLog(cocoa(NSFileReadUnknownError, posix: EIO)))
+        #expect(!HistoryStore.isNotReadableLog(cocoa(NSFileWriteUnknownError, posix: nil)))
+        #expect(!HistoryStore.isNotReadableLog(cocoa(NSFileReadUnknownError, posix: EMFILE)))
     }
 
     /// A marker doesn't make someone else's folder ours.

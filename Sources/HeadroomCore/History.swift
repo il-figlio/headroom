@@ -163,10 +163,26 @@ public final class HistoryStore {
         guard interrupted || !hasHistory else { return false }
         let handle: FileHandle
         do { handle = try FileHandle(forReadingFrom: legacy.appendingPathComponent("log.md")) }
-        catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile { return false }
+        catch where isNotReadableLog(error) { return false }
         defer { try? handle.close() }
         let prefix = try handle.read(upToCount: legacyLogHeader.utf8.count) ?? Data()
         return String(decoding: prefix, as: UTF8.self) == legacyLogHeader
+    }
+
+    /// True when log.md can't be opened because nothing is there (ENOENT),
+    /// the legacy path isn't a folder (ENOTDIR), or reading it is denied
+    /// (EACCES). Builds up to 0.8.0 always wrote a log.md their user could
+    /// read, so such a folder holds no history of this app's to move. Other
+    /// errors may pass, and leave the move to a later launch.
+    static func isNotReadableLog(_ error: Error) -> Bool {
+        let error = error as NSError
+        // Cocoa folds ENOTDIR into 512 (an unknown write error) and EACCES
+        // into 257 or 513; the POSIX error underneath says which it was.
+        let posix = error.domain == NSPOSIXErrorDomain ? error
+            : (error.userInfo[NSUnderlyingErrorKey] as? NSError).flatMap { $0.domain == NSPOSIXErrorDomain ? $0 : nil }
+        if let posix { return [ENOENT, ENOTDIR, EACCES].contains(Int32(posix.code)) }
+        return error.domain == NSCocoaErrorDomain
+            && [NSFileNoSuchFileError, NSFileReadNoSuchFileError, NSFileReadNoPermissionError].contains(error.code)
     }
 
     public enum MigrationOutcome { case notNeeded, completed, blocked }
@@ -273,18 +289,28 @@ public final class HistoryStore {
         }
     }
 
-    /// False when the legacy database is in use. The -wal can hold the newest
-    /// committed samples (the app doesn't close the database at quit), and a
-    /// database opened without it loses them, so the three files move as a set:
-    /// the -wal is folded in, history.sqlite moves, and -wal and -shm follow
-    /// only to sit next to it. Nothing moves if any of the three is already in
-    /// the new folder, because pairing files of two databases can corrupt both.
+    /// False when the legacy database is in use or can't be read for now. The
+    /// -wal can hold the newest committed samples (the app doesn't close the
+    /// database at quit), and a database opened without it loses them, so the
+    /// three files move as a set: the -wal is folded in, history.sqlite moves,
+    /// and -wal and -shm follow only to sit next to it. A damaged database
+    /// that can't be folded moves the same way, -wal untouched. Nothing moves
+    /// onto a database already in the new folder, and a -wal or -shm there
+    /// without one is renamed aside first, because pairing files of two
+    /// databases can corrupt both.
     private static func moveDatabase(_ work: inout LegacyMove, from legacy: URL, to current: URL) throws -> Bool {
         let source = legacy.appendingPathComponent(databaseName)
         let destination = current.appendingPathComponent(databaseName)
         if work.exists(source) {
-            guard !([databaseName] + databaseSidecars).contains(where: { work.exists(current.appendingPathComponent($0)) }) else { return false }
-            guard foldWriteAheadLog(source) else { return false }
+            guard !work.exists(destination), foldWriteAheadLog(source) != .retry else { return false }
+            // A -wal or -shm with no database beside it can't be this one's.
+            // It moves aside under another name, kept, so it can't pair with
+            // the database about to arrive and doesn't block the move forever.
+            let stamp = Int(Date().timeIntervalSince1970)
+            for name in databaseSidecars {
+                try work.move(current.appendingPathComponent(name), to: current.appendingPathComponent("\(name).orphaned-\(stamp)"))
+            }
+            guard !databaseSidecars.contains(where: { work.exists(current.appendingPathComponent($0)) }) else { return false }
             try work.move(source, to: destination)
         }
         // After a fold the sidecars are empty; if it couldn't run (not a
@@ -299,18 +325,37 @@ public final class HistoryStore {
         return true
     }
 
+    enum Fold: Equatable {
+        /// history.sqlite holds every committed row by itself.
+        case folded
+        /// Not a database SQLite can use, now or later: move the files as they are.
+        case plainFiles
+        /// In use by another copy, or a failure a later launch can get past.
+        case retry
+    }
+
     /// Checkpoints the legacy database so history.sqlite holds every committed
-    /// row by itself. Any SQLite error leaves it for retry.
-    private static func foldWriteAheadLog(_ database: URL) -> Bool {
+    /// row by itself. SQLITE_CORRUPT and SQLITE_NOTADB can't improve by
+    /// waiting, so the files then move as they are; any other error (BUSY and
+    /// LOCKED from a running copy, FULL, IOERR, CANTOPEN, READONLY, ...)
+    /// leaves them for a later launch.
+    static func foldWriteAheadLog(_ database: URL) -> Fold {
         // Only a real database is handed to SQLite, which discards a -wal it
         // can't pair with one. Anything else moves as plain files.
-        guard let handle = try? FileHandle(forReadingFrom: database) else { return false }
+        guard let handle = try? FileHandle(forReadingFrom: database) else { return .retry }
         defer { try? handle.close() }
         let magic: Data?
-        do { magic = try handle.read(upToCount: 16) } catch { return false }
-        guard magic == Data("SQLite format 3\0".utf8) else { return true }
+        do { magic = try handle.read(upToCount: 16) } catch { return .retry }
+        guard magic == Data("SQLite format 3\0".utf8) else { return .plainFiles }
         var db: OpaquePointer?
         var status = sqlite3_open_v2(database.path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil)
+        if status == SQLITE_OK {
+            // Closing the last connection checkpoints, then truncates or
+            // deletes the -wal, including one SQLite can't read (which it
+            // takes as empty). Only the explicit checkpoint below may: if the
+            // fold fails, the -wal moves as it is with its database.
+            status = headroom_sqlite3_no_checkpoint_on_close(db)
+        }
         if status == SQLITE_OK {
             sqlite3_busy_timeout(db, 1000)
             // A connection learns the journal mode on its first read; a checkpoint before that does nothing.
@@ -318,7 +363,11 @@ public final class HistoryStore {
         }
         if status == SQLITE_OK { status = sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_TRUNCATE, nil, nil) }
         sqlite3_close(db)
-        return status == SQLITE_OK
+        switch status & 0xff {
+        case SQLITE_OK: return .folded
+        case SQLITE_CORRUPT, SQLITE_NOTADB: return .plainFiles
+        default: return .retry
+        }
     }
 
     /// Archives the user chose to keep. With no Archives folder in the new
