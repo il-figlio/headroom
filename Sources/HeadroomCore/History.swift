@@ -396,6 +396,12 @@ public final class HistoryStore {
     private var sampleCache: SampleCache?
     private var consumerCache: ConsumerScan?
     private var dataVersion: Int64?
+    /// When agent_usage and agent_sessions last had the 30-day limit applied
+    /// (on open, then by record() at most once a day); nil until it succeeds.
+    private var agentRowsPrunedAt: Date?
+    /// record() ages agent rows this often. They only grow while Agents is on,
+    /// and then each scan prunes them too.
+    static let agentPruneInterval: TimeInterval = 86400
 
     /// Samples, events, hourly agent usage and saved agent sessions older than this are deleted.
     public static let retention: TimeInterval = 30 * 86400
@@ -431,20 +437,41 @@ public final class HistoryStore {
         pruneExpired(now: now)
     }
     /// Retention on open: record() and agent scans prune as they write, which
-    /// never happens while recording is paused or Agents is off (saved agent
-    /// sessions included). Runs before
+    /// never happens while recording is paused (and, for agent rows, record()
+    /// only does daily). Runs before
     /// anything is cached. Best effort, because a busy or full disk shouldn't
     /// keep history from opening; the next open or write tries again.
     private func pruneExpired(now: Date) {
         let cutoff = SQLValue.number(now.addingTimeInterval(-Self.retention).timeIntervalSince1970)
-        try? agentTransaction {
-            try execute("DELETE FROM samples WHERE ts < ?", [cutoff])
-            try execute("DELETE FROM events WHERE ts < ?", [cutoff])
-            try execute("DELETE FROM agent_usage WHERE hour < ?", [cutoff])
-            // Same rule as AgentScanner.sessionRetention, for when Agents is
-            // off and no scan runs. A row with no dates at all can't be aged.
-            try execute("DELETE FROM agent_sessions WHERE COALESCE(last_event_at, started_at) < ?", [cutoff])
+        do {
+            try agentTransaction {
+                try execute("DELETE FROM samples WHERE ts < ?", [cutoff])
+                try execute("DELETE FROM events WHERE ts < ?", [cutoff])
+                try deleteExpiredAgentRows(before: cutoff)
+            }
+            agentRowsPrunedAt = now
+        } catch {}
+    }
+    /// For when Agents is off and no scan runs. Sessions follow
+    /// AgentScanner.sessionRetention; a row with no dates at all can't be
+    /// aged and stays (a scan drops it). Nothing here is cached by the store.
+    private func deleteExpiredAgentRows(before cutoff: SQLValue) throws {
+        try execute("DELETE FROM agent_usage WHERE hour < ?", [cutoff])
+        try execute("DELETE FROM agent_sessions WHERE COALESCE(last_event_at, started_at) < ?", [cutoff])
+    }
+    /// A copy that runs for weeks with Agents off opens once: record() ages
+    /// agent rows too, daily rather than with every sample. Best effort, like
+    /// the prune on open; a failure is retried by the next record().
+    private func pruneAgentRowsIfDue(at date: Date) {
+        if let last = agentRowsPrunedAt {
+            let elapsed = date.timeIntervalSince(last)
+            guard elapsed >= Self.agentPruneInterval || elapsed < 0 else { return }
         }
+        let cutoff = SQLValue.number(date.addingTimeInterval(-Self.retention).timeIntervalSince1970)
+        do {
+            try agentTransaction { try deleteExpiredAgentRows(before: cutoff) }
+            agentRowsPrunedAt = date
+        } catch {}
     }
     /// Databases written before storage tracking lack the disk columns.
     private func migrate() throws {
@@ -513,6 +540,7 @@ public final class HistoryStore {
         try execute("DELETE FROM samples WHERE ts < ?", [.number(cutoff)])
         sampleCache?.rows.removeAll { $0.ts < cutoff }
         try execute("DELETE FROM events WHERE ts < ?", [.number(cutoff)])
+        pruneAgentRowsIfDue(at: date)
         let summary = try self.summary(now: date)
         if logDue(at: date) { try writeLog(summary: summary, now: date) }
         return summary

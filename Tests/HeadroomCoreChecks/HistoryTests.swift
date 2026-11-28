@@ -139,6 +139,37 @@ import Testing
         let store = try HistoryStore(directory: dir, now: base)
         #expect(try store.loadAgentSessions().map(\.sessionId).sorted() == ["recent", "undated"])
     }
+    /// A copy left running with Agents off opens once. record() ages agent
+    /// usage and saved sessions as well, at most once a day, with the same
+    /// rule as opening: undated sessions stay.
+    @Test func recordingPrunesAgentRowsDaily() throws {
+        let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try HistoryStore(directory: dir, now: base)
+        func agentRows() throws -> [String] {
+            let usage = try store.executeForTesting("SELECT count(*) FROM agent_usage")[0][0]
+            let sessions = try store.executeForTesting("SELECT session_id FROM agent_sessions ORDER BY session_id").map { $0[0] }
+            return ["usage \(usage)"] + sessions
+        }
+        // 29.9 days old when the store opens, so opening keeps them.
+        let aging = base.addingTimeInterval(-29.9 * 86400).timeIntervalSince1970
+        try store.executeForTesting("INSERT INTO agent_usage VALUES (\(aging), 'claude', 10, 0.5), (\(base.timeIntervalSince1970), 'codex', 5, 0)")
+        try store.executeForTesting("""
+            INSERT INTO agent_sessions (kind, session_id, started_at, last_event_at, file_path) VALUES
+            ('claude', 'aging', \(aging), \(aging), '/a'), ('claude', 'started-only', \(aging), NULL, '/b'),
+            ('claude', 'undated', NULL, NULL, '/c'), ('claude', 'recent', \(aging), \(base.timeIntervalSince1970), '/d')
+            """)
+        let all = ["usage 2", "aging", "recent", "started-only", "undated"]
+        _ = try store.record(memory: memory(), apps: [], at: base.addingTimeInterval(60))
+        #expect(try agentRows() == all)
+        // Expired by now, but the store aged them less than a day ago.
+        _ = try store.record(memory: memory(), apps: [], at: base.addingTimeInterval(12 * 3600))
+        #expect(try agentRows() == all)
+        let summary = try store.record(memory: memory(), apps: [], at: base.addingTimeInterval(86400))
+        #expect(try agentRows() == ["usage 1", "recent", "undated"])
+        // The samples and the summary's cache are untouched.
+        #expect(summary.sampleCount == 3)
+        #expect(try store.loadAgentUsage(since: base.addingTimeInterval(-40 * 86400)).map(\.hour) == [base])
+    }
     /// A row exactly thirty days old stays; a second older and it goes.
     @Test func openingAtTheRetentionBoundaryKeepsTheRow() throws {
         let dir = directory(); defer { try? FileManager.default.removeItem(at: dir) }
