@@ -71,7 +71,7 @@ Notarization uses one of three paths, in this order:
 git tag -s v0.9.0 -m 'Headroom 0.9.0'   # signed annotated tag
 git push origin v0.9.0
 ./scripts/release.py publish --verify-tag   # draft release for the pushed tag, via gh
-gh release edit v0.9.0 --draft=false --latest --repo il-figlio/headroom
+gh release edit v0.9.0 --draft=false --latest --verify-tag --repo il-figlio/headroom
 ./scripts/release.py promote            # downloads and checks the published ZIP; then commit appcast.xml to main
 ./scripts/render-cask.py                # dist/releases/v0.9.0/headroom.rb for the tap
 ```
@@ -80,11 +80,11 @@ Outputs go to `dist/releases/v<version>/`: `Headroom-<version>-universal.zip` (S
 
 **The signed tag comes first.** Publishing a draft whose tag doesn't exist makes GitHub create an unsigned lightweight tag, so create and push the signed annotated tag before making the draft public. If a tag already exists on GitHub, `publish` requires it to be the same annotated tag as the local one, pass `git verify-tag`, and point to `HEAD`. Without a pushed tag, `publish --verify-tag` refuses to proceed; plain `publish` can prepare a draft targeting `HEAD` for review, with a warning not to make it public yet.
 
-Before creating or changing a draft, `publish` checks that `SHA256SUMS` matches both the ZIP and DMG, that the signed appcast describes this release and its enclosure matches the ZIP, and that the packaged apps match the configured version and build, are universal, Developer ID signed, stapled, and accepted by Gatekeeper. The DMG must be Developer ID signed; it can be unstapled on the Xcode export path. These checks don't build, sign, or notarize anything.
+Before creating or changing a draft, `publish` checks that `SHA256SUMS` matches both the ZIP and DMG, that the signed appcast describes this release and its enclosure matches the ZIP, and that the packaged apps match the configured version and build, are universal, Developer ID signed, stapled, and accepted by Gatekeeper. The DMG must be Developer ID signed; it can be unstapled on the Xcode export path. These checks don't build, sign, or notarize anything. `publish` then uploads the ZIP, DMG, `SHA256SUMS` and `appcast.xml` in one `gh release upload --clobber` call and fails if the draft carries any other asset, such as a leftover from an earlier build; delete it with `gh release delete-asset` and run `publish` again. `--verify-tag` on `gh release edit` makes publishing fail rather than create a tag.
 
 `appcast` refuses a signing key whose public half is not `SPARKLE_PUBLIC_ED_KEY`. Every feed and archive signature is re-checked against that key with an independent Ed25519 verifier (`scripts/ed25519.py`) for distribution. The only enclosure URL any step accepts is the public release download, the one `UpdatePolicy.allowsArchive` accepts in the app.
 
-`promote` runs after the release is public. It refuses a feed that does not verify, so a dry-run feed can never be promoted. It then downloads the published ZIP anonymously, the way a client would, and refuses unless its length and the enclosure's `sparkle:edSignature` match the downloaded file. `--no-download-check` skips the download and prints a warning; `--from-release` promotes the `appcast.xml` attached to the release instead of the local one.
+`promote` runs after the release is public. It refuses a feed that does not verify, so a dry-run feed can never be promoted. It then downloads the published ZIP anonymously, the way a client would, and refuses unless its length and the enclosure's `sparkle:edSignature` match the downloaded file. `--no-download-check` skips the download and prints a warning; `--from-release` promotes the `appcast.xml` attached to the release instead of the local one; it is fetched with the same anonymous download as the ZIP and refused if it is larger than 1 MiB.
 
 ### Dry run (no secrets, no network)
 

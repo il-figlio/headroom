@@ -454,7 +454,14 @@ def verify_pushed_tag(head, required):
         if required:
             raise Failure(f'No tag {TAG} exists on GitHub. {TAG_HINT}')
         return False
-    pushed = json.loads(ref.stdout)['object']
+    answer = json.loads(ref.stdout)
+    # For a missing tag GitHub may answer with a list of refs that merely start
+    # with the name (v0.9.0 -> v0.9.0-rc1, ...): that is not this tag.
+    if not isinstance(answer, dict) or answer.get('ref') not in (None, f'refs/tags/{TAG}'):
+        if required:
+            raise Failure(f'No tag {TAG} exists on GitHub. {TAG_HINT}')
+        return False
+    pushed = answer['object']
     if pushed['type'] != 'tag':
         raise Failure(f'{TAG} on GitHub is a lightweight tag, not an annotated one.')
     local = output('git', 'rev-parse', '--verify', '--quiet', f'refs/tags/{TAG}', check=False)
@@ -466,6 +473,31 @@ def verify_pushed_tag(head, required):
     if commit != head:
         raise Failure(f'{TAG} points at {commit[:12]}, not HEAD ({head[:12]}). Draft not changed.')
     return True
+
+
+TITLE = f'{APP_NAME} {VERSION}'
+
+
+def assets():
+    """Everything a release carries, in upload order."""
+    return (ZIP, DMG, SUMS, FEED)
+
+
+def check_draft_assets():
+    """--clobber only replaces same-named assets; anything else attached to the
+    draft is a leftover from an earlier build and would be published with it."""
+    release = find_release()
+    if release is None:
+        raise Failure(f'Draft {TAG} disappeared after the upload.')
+    found = sorted(asset['name'] for asset in release.get('assets', []))
+    expected = sorted(path.name for path in assets())
+    if found != expected:
+        extra = sorted(set(found) - set(expected))
+        missing = sorted(set(expected) - set(found))
+        raise Failure(f'Draft {TAG} has the wrong assets (unexpected: {", ".join(extra) or "none"}; '
+                      f'missing: {", ".join(missing) or "none"}). Delete the extra ones with '
+                      f'gh release delete-asset {TAG} <name> --repo {REPO} and run publish again.')
+    return release
 
 
 def publish(args):
@@ -486,17 +518,18 @@ def publish(args):
     # An untagged draft targets HEAD, but publishing it now would create an unsigned tag.
     target = [] if pushed_tag else ['--target', head]
     if release:
-        gh_release('edit', TAG, '--target', head, '--notes-file', notes)
+        gh_release('edit', TAG, '--target', head, '--title', TITLE, '--notes-file', notes)
     else:
-        gh_release('create', TAG, '--draft', *(target or ['--verify-tag']), '--title', f'{APP_NAME} {VERSION}', '--notes-file', notes)
-    gh_release('upload', TAG, ZIP, DMG, SUMS, '--clobber')
-    gh_release('upload', TAG, FEED, '--clobber')
-    print(f'Draft {TAG} ready: {find_release()["html_url"]}')
+        gh_release('create', TAG, '--draft', *(target or ['--verify-tag']), '--title', TITLE, '--notes-file', notes)
+    # One call, so a failure can't leave new binaries next to an old appcast.xml.
+    gh_release('upload', TAG, *assets(), '--clobber')
+    draft = check_draft_assets()
+    print(f'Draft {TAG} ready: {draft["html_url"]}')
     if not pushed_tag:
         print(f'DO NOT PUBLISH THIS DRAFT YET: no tag {TAG} exists on GitHub. Publishing it now would make GitHub '
               f'create an unsigned lightweight tag. {TAG_HINT}', file=sys.stderr)
         return
-    print(f'Next: review it, publish it (gh release edit {TAG} --draft=false --latest --repo {REPO}),')
+    print(f'Next: review it, publish it (gh release edit {TAG} --draft=false --latest --verify-tag --repo {REPO}),')
     print('then run scripts/release.py promote and commit appcast.xml to main.')
 
 
@@ -515,6 +548,10 @@ def download(url, destination, limit):
             remaining -= len(chunk)
 
 
+# A single-item signed feed is a few kilobytes, its HTML notes included.
+FEED_LIMIT = 1 << 20
+
+
 def promote(args):
     """Ship the update: copy a verified feed into the repo after the release is public."""
     public = base64.b64decode(CONFIG['SPARKLE_PUBLIC_ED_KEY'])
@@ -522,7 +559,13 @@ def promote(args):
     with tempfile.TemporaryDirectory() as temp:
         if args.from_release:
             source = pathlib.Path(temp) / 'appcast.xml'
-            urllib.request.urlretrieve(f'https://github.com/{REPO}/releases/download/{TAG}/appcast.xml', source)
+            feed_url = f'https://github.com/{REPO}/releases/download/{TAG}/appcast.xml'
+            try:
+                download(feed_url, source, FEED_LIMIT)
+            except OSError as error:
+                raise Failure(f'{feed_url} is not publicly downloadable yet ({error}). Publish the release first.')
+            if source.stat().st_size > FEED_LIMIT:
+                raise Failure(f'{feed_url} is larger than {FEED_LIMIT} bytes; that is not this release\'s appcast.')
         url = check_feed(source, public)
         if args.no_download_check:
             print('warning: --no-download-check: the published archive was NOT downloaded, so nothing confirms that '

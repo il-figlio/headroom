@@ -33,17 +33,20 @@ class PublishChecks(unittest.TestCase):
         self.commit = HEAD
         self.valid_tag_signature = True
         self.mutate = stack.enter_context(patch.object(release, 'gh_release'))
-        self.draft = {'draft': True, 'html_url': 'draft fixture'}
+        self.draft = {'draft': True, 'html_url': 'draft fixture',
+                      'assets': [{'name': path.name} for path in (release.ZIP, release.DMG, release.SUMS, release.FEED)]}
         self.find_release = stack.enter_context(patch.object(release, 'find_release', return_value=self.draft))
         stack.enter_context(patch.object(release, 'run', side_effect=self.command))
-        stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+        self.stdout = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
         self.stderr = stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
 
     def command(self, *args, **kwargs):
         if args == ('gh', 'api', f'repos/{release.REPO}/git/ref/tags/{release.TAG}'):
             if self.pushed is None:
                 return subprocess.CompletedProcess(args, 1, '', 'gh: Not Found (HTTP 404)')
-            return subprocess.CompletedProcess(args, 0, json.dumps({'object': self.pushed}), '')
+            if isinstance(self.pushed, list):
+                return subprocess.CompletedProcess(args, 0, json.dumps(self.pushed), '')
+            return subprocess.CompletedProcess(args, 0, json.dumps({'ref': f'refs/tags/{release.TAG}', 'object': self.pushed}), '')
         if args == ('git', 'verify-tag', TAG_OBJECT):
             return subprocess.CompletedProcess(args, 0 if self.valid_tag_signature else 1)
         git = {
@@ -88,7 +91,15 @@ class PublishChecks(unittest.TestCase):
         with patch.object(release, 'check_artifacts'):
             self.publish(verify_tag=False)
         self.assertEqual(self.mutate.call_args_list[0].args,
-                         ('edit', release.TAG, '--target', HEAD, '--notes-file', self.notes))
+                         ('edit', release.TAG, '--target', HEAD, '--title', release.TITLE, '--notes-file', self.notes))
+        self.assertIn('DO NOT PUBLISH', self.stderr.getvalue())
+
+    def test_prefix_match_list_counts_as_missing_tag(self):
+        # git/ref/tags/<tag> may answer a prefix match with a JSON list.
+        self.pushed = [{'ref': f'refs/tags/{release.TAG}-rc1', 'object': {'type': 'tag', 'sha': TAG_OBJECT}}]
+        self.refuses('No tag .* exists on GitHub')
+        with patch.object(release, 'check_artifacts'):
+            self.publish(verify_tag=False)
         self.assertIn('DO NOT PUBLISH', self.stderr.getvalue())
 
     def test_invalid_checksums(self):
@@ -126,13 +137,62 @@ class PublishChecks(unittest.TestCase):
             self.publish()
         self.assertTrue(preflight.call_args.kwargs['distribution'])
         self.assertEqual(self.mutate.call_args_list[0].args[:4], ('create', release.TAG, '--draft', '--verify-tag'))
-        self.assertEqual([call.args[0] for call in self.mutate.call_args_list], ['create', 'upload', 'upload'])
+        self.assertEqual([call.args[0] for call in self.mutate.call_args_list], ['create', 'upload'])
+        self.assertIn('--title', self.mutate.call_args_list[0].args)
 
     def test_verified_tag_retargets_an_existing_draft(self):
         with patch.object(release, 'check_artifacts'):
             self.publish()
         self.assertEqual(self.mutate.call_args_list[0].args,
-                         ('edit', release.TAG, '--target', HEAD, '--notes-file', self.notes))
+                         ('edit', release.TAG, '--target', HEAD, '--title', release.TITLE, '--notes-file', self.notes))
+        self.assertIn('--draft=false --latest --verify-tag', self.stdout.getvalue())
+
+    def test_all_assets_are_uploaded_in_one_call(self):
+        with patch.object(release, 'check_artifacts'):
+            self.publish()
+        uploads = [call.args for call in self.mutate.call_args_list if call.args[0] == 'upload']
+        self.assertEqual(uploads, [('upload', release.TAG, release.ZIP, release.DMG, release.SUMS, release.FEED, '--clobber')])
+
+    def test_leftover_draft_asset_fails(self):
+        self.draft['assets'].append({'name': 'Headroom-0.8.0.dmg'})
+        with patch.object(release, 'check_artifacts'):
+            with self.assertRaisesRegex(release.Failure, 'unexpected: Headroom-0.8.0.dmg'):
+                self.publish()
+        self.draft['assets'] = self.draft['assets'][:2]
+        with patch.object(release, 'check_artifacts'):
+            with self.assertRaisesRegex(release.Failure, 'missing: '):
+                self.publish()
+
+
+class PromoteChecks(unittest.TestCase):
+    def setUp(self):
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch.object(release.urllib.request, 'urlretrieve', side_effect=AssertionError('urlretrieve')))
+        self.check_feed = stack.enter_context(patch.object(release, 'check_feed'))
+        stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+        stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+        # promote writes ROOT/appcast.xml on success; every test here must fail first.
+        stack.enter_context(patch.object(release.pathlib.Path, 'write_bytes', side_effect=AssertionError('write_bytes')))
+
+    def promote(self):
+        release.promote(argparse.Namespace(from_release=True, no_download_check=True))
+
+    def test_feed_download_is_capped(self):
+        def oversized(url, destination, limit):
+            destination.write_text('x' * (limit + 1))
+        with patch.object(release, 'download', side_effect=oversized) as download:
+            with self.assertRaisesRegex(release.Failure, 'larger than'):
+                self.promote()
+        url, _, limit = download.call_args.args
+        self.assertEqual(url, f'https://github.com/{release.REPO}/releases/download/{release.TAG}/appcast.xml')
+        self.assertEqual(limit, release.FEED_LIMIT)
+        self.check_feed.assert_not_called()
+
+    def test_feed_download_error_is_a_failure(self):
+        with patch.object(release, 'download', side_effect=OSError('HTTP Error 404')):
+            with self.assertRaisesRegex(release.Failure, 'not publicly downloadable'):
+                self.promote()
 
 
 if __name__ == '__main__':
