@@ -41,7 +41,7 @@ struct WelcomeView: View {
                        isOn: preferences.limitsBinding)
                 Divider()
                 option("Agents",
-                       "Lists coding-agent sessions and token use by reading local Claude Code and Codex transcripts. Read-only; nothing leaves this Mac.",
+                       "Lists coding-agent sessions and token use by reading local coding-agent transcripts (Claude Code, Codex and others). Read-only; nothing leaves this Mac.",
                        isOn: widgets.widgetBinding(.agents))
             }
 

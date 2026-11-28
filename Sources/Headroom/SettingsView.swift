@@ -111,7 +111,7 @@ private struct GeneralSettings: View {
                 Toggle("Favorites dock", isOn: widgets.widgetBinding(.favorites))
                 Toggle(isOn: widgets.widgetBinding(.agents)) {
                     Text("Agents")
-                    Text("Reads local Claude Code and Codex transcripts, read-only.")
+                    Text("Reads local coding-agent transcripts (Claude Code, Codex and others), read-only.")
                 }
                 // Reads as off while Limits itself is off, whatever the card setting.
                 Toggle(isOn: preferences.limitsEnabled ? widgets.widgetBinding(.quota) : .constant(false)) {
