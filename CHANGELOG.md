@@ -8,13 +8,17 @@ download.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-28
+
 ### Added
 - A short welcome on first launch explaining what Headroom measures, where
   it lives, and the optional features, plus a Settings window (⌘,) and an
   About panel.
 - Public updates: Headroom checks a public, signed update feed and no longer
   needs a GitHub login. The download is a notarized DMG, and later updates
-  install in place.
+  install in place. By default Headroom checks once a day and downloads and
+  installs a signed update by itself; both can be turned off in Settings →
+  Updates, and the welcome window says so.
 - Hover details across the panel: rest on any row, meter, or tile to see
   exactly what it measures.
 - Named Claude accounts from Ante: each signed-in account gets its own row
@@ -40,6 +44,16 @@ download.
   it, the `Archives` folder included, but only when the log there was
   written by this app. An interrupted move is finished on the next launch,
   and the move is skipped while another copy of Headroom is running.
+- If that move can't be finished, Headroom still opens. History is off for
+  that launch, Settings → History and the Trends window say why and what to
+  do, and the move is tried again at the next launch. `--scan`, `--capture`
+  and `--report` exit with an error while the move is blocked.
+- A `~/Library/Application Support/Headroom` that is a file, or whose
+  `log.md` is missing or can't be read, is treated as not Headroom's and
+  left alone. A damaged old database is moved as it is, with its `-wal` and
+  `-shm` files. A stray `history.sqlite-wal` or `history.sqlite-shm` in the
+  new folder with no database beside it is renamed to
+  `<name>.orphaned-<timestamp>` and kept.
 - The disk consumer scan starts only when you press its button in Trends.
   It no longer starts by itself when you open Trends with results more than
   a day old. The first scan can make macOS ask for access to folders such
@@ -66,6 +80,11 @@ download.
   check whether one exists and doesn't list Ante account names. Turning
   Limits off also forgets any token held in memory and deletes
   `quota-cache.json`.
+- While Limits is on and no sign-in is left (you signed out of the tools, or
+  turned off Keychain use and the Keychain item was the only sign-in), the
+  Limits card is cleared, `quota-cache.json` is deleted, and any token or
+  reading held in memory is forgotten. Turning off **Use Claude Code's
+  Keychain sign-in** drops a token read from the Keychain right away.
 - Limits usage requests don't follow redirects.
 - New app icon: a white gauge on a black tile with its needle near the low
   end.
@@ -73,7 +92,9 @@ download.
   labeled "% used", and a reading that couldn't be refreshed is dimmed and
   labeled with when it was fetched.
 - Agents is off by default. Turn it on from the panel's widget menu. While
-  it's off, Headroom does no agent scanning.
+  it's off, Headroom does no agent scanning. The welcome window and Settings
+  say that it reads local coding-agent transcripts (Claude Code, Codex and
+  others).
 - The Agents card is built around what's running now: project, agent, and
   the live memory of each agent's processes, then today's tokens and
   estimated spend.
@@ -99,12 +120,17 @@ download.
 - Codex token totals no longer count cached input and reasoning output
   twice.
 - A Claude Code message that appears on several transcript lines, or is
-  copied into a resumed session's transcript, is counted once.
+  copied into a resumed session's transcript, is counted once while
+  Headroom keeps running. Headroom remembers only the most recent 20,000
+  responses, in memory, so a copy that arrives after a relaunch, or after
+  20,000 newer responses, is counted again.
 - Opus 4 and 4.1 usage is shown as unpriced instead of being priced at
   the Opus 4.5 rate.
 - Samples, events, hourly agent totals, and agent session rows older than
   30 days are pruned whenever the database is opened, not only while
-  recording.
+  recording. With Headroom left running, hourly agent totals and agent
+  session rows are also pruned once a day while it records history, even
+  with Agents off.
 - Stored agent session metadata (project folder and transcript path) is
   deleted 30 days after the session's last activity.
 - A Codex usage response with an unexpected field loses only that field or
@@ -113,6 +139,9 @@ download.
 - A failed Ante usage read no longer blanks the account, a hung Ante process
   is stopped after its timeout, and the last good reading survives a failed
   fetch at launch.
+- Opening Headroom on a Mac with no display attached no longer crashes.
+- After you archive history, Trends no longer shows the archived disk
+  consumer scan.
 
 ## [0.8.0] - 2026-10-15
 
