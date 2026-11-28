@@ -341,6 +341,73 @@ private let signedInAt = Date(timeIntervalSince1970: 1_700_000_000)
     #expect(http.requests.count == 1 && keychain.calls == calls)
 }
 
+// MARK: - Turning Keychain use off
+
+@Test func turningKeychainUseOffDropsItsTokenAndReadingAtOnce() async {
+    let home = Home(); defer { home.remove() }
+    let keychain = FakeKeychain(info: .init(modified: signedInAt), secret: .found(keychainRecord))
+    let failing = Flag(false)
+    let http = FakeHTTP { _ in failing.on ? (500, "{}") : (200, #"{"five_hour":{"utilization":10}}"#) }
+    let allowed = Flag(true)
+    let claude = ClaudeQuotaSource(keychain: keychain, keychainAllowed: { allowed.on }, http: http.get)
+    #expect(await claude.fetch(home: home.url).plan == "Pro")
+    #expect(claude.cachedOrigin == .keychain)
+
+    allowed.on = false
+    let calls = keychain.calls
+    claude.forgetKeychainSignIn()
+    #expect(claude.cachedOrigin == nil, "dropped without waiting for a fetch")
+    #expect(keychain.calls == calls, "forgetting doesn't touch the Keychain")
+
+    // Back on: the secret is read again and the old reading isn't replayed.
+    allowed.on = true; failing.on = true
+    let after = await claude.fetch(home: home.url)
+    #expect(keychain.secretReads == 2)
+    #expect(after.error == "Claude usage API returned HTTP 500")
+    #expect(after.windows.isEmpty && after.plan == nil)
+}
+
+@Test func turningKeychainUseOffKeepsAFileSignIn() async {
+    let home = Home(); defer { home.remove() }
+    home.write(ClaudeQuotaSource.claudeFile, validFile, modified: signedInAt)
+    let keychain = FakeKeychain(info: .init(modified: signedInAt), secret: .found(keychainRecord))
+    let failing = Flag(false)
+    let http = FakeHTTP { _ in failing.on ? (500, "{}") : (200, #"{"five_hour":{"utilization":10}}"#) }
+    let claude = source(keychain, http: http)
+    #expect(await claude.fetch(home: home.url).plan == "Max")
+    #expect(claude.cachedOrigin == .claudeFile)
+
+    claude.forgetKeychainSignIn()
+    #expect(claude.cachedOrigin == .claudeFile)
+    failing.on = true
+    let dimmed = await claude.fetch(home: home.url)
+    #expect(dimmed.error == "Claude usage API returned HTTP 500" && dimmed.windows.count == 1 && dimmed.plan == "Max",
+            "the file sign-in's last good reading is still replayed")
+    #expect(http.requests.allSatisfy { $0.1["Authorization"] == "Bearer file-new" })
+    #expect(keychain.secretReads == 0)
+}
+
+@Test func keychainFetchLandingAfterTheSwitchKeepsNothing() async {
+    let home = Home(); defer { home.remove() }
+    let keychain = FakeKeychain(info: .init(modified: signedInAt), secret: .found(keychainRecord))
+    let allowed = Flag(true)
+    let failing = Flag(false)
+    // The setting goes off while the request is out.
+    let http = FakeHTTP { _ in
+        if failing.on { return (500, "{}") }
+        allowed.on = false
+        return (200, #"{"five_hour":{"utilization":10}}"#)
+    }
+    let claude = ClaudeQuotaSource(keychain: keychain, keychainAllowed: { allowed.on }, http: http.get)
+    #expect(await claude.fetch(home: home.url).plan == "Pro")
+    #expect(claude.cachedOrigin == nil)
+
+    allowed.on = true; failing.on = true
+    let after = await claude.fetch(home: home.url)
+    #expect(after.windows.isEmpty && after.plan == nil, "the late reading isn't replayed")
+    #expect(keychain.secretReads == 2)
+}
+
 // MARK: - Forgetting (Limits turned off)
 
 @Test func forgetDropsTheCachedTokenAndTheLastGoodReading() async {

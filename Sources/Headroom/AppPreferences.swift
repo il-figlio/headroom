@@ -52,6 +52,9 @@ final class AppPreferences: ObservableObject {
         claudeKeychainEnabled = enabled
         if !ScreenshotExport.active { UserDefaults.standard.set(enabled, forKey: QuotaSettings.claudeKeychainKey) }
         syncQuotaSettings()
+        // After the sync, so no new read can reach the Keychain: a token
+        // already read from it goes now, not at a fetch that may never come.
+        if !enabled { QuotaSources.forgetKeychainSignIn() }
         changed?()
     }
 

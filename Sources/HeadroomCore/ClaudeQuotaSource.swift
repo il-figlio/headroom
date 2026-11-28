@@ -42,6 +42,8 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
     private var failureStamp: SignInStamp?
     /// A sign-in change was noticed; the next fetch skips any Retry-After gate.
     private var retryPending = false
+    /// Where the credential behind `state`'s last good reading came from.
+    private var lastGoodOrigin: Origin?
 
     public convenience init() { self.init(keychain: SystemClaudeKeychain()) }
 
@@ -144,8 +146,33 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
         cachedStamp = nil
         failureStamp = nil
         retryPending = false
+        lastGoodOrigin = nil
         lock.unlock()
         state.forget()
+    }
+
+    /// "Use Claude Code's Keychain sign-in" was turned off: drops a token
+    /// read from the Keychain, and the last good reading fetched with one,
+    /// right away, so neither waits in memory for a fetch that may never
+    /// come (the source isn't polled without another sign-in). A file
+    /// sign-in's token and readings are kept. A fetch that is using a
+    /// Keychain token as the setting goes off drops what it got on landing.
+    public func forgetKeychainSignIn() {
+        lock.lock(); defer { lock.unlock() }
+        if cachedCredentials?.origin == .keychain {
+            cachedCredentials = nil
+            cachedStamp = nil
+        }
+        if lastGoodOrigin == .keychain {
+            lastGoodOrigin = nil
+            state.dropLastGood()
+        }
+    }
+
+    /// Checks only: the origin of the cached credential, if any.
+    var cachedOrigin: Origin? {
+        lock.lock(); defer { lock.unlock() }
+        return cachedCredentials?.origin
     }
 
     // MARK: Credentials
@@ -243,7 +270,10 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
         do { credentials = try validCredentials(home: home, stamp: current) } catch {
             let message = error.localizedDescription
             // No sign-in left: its last readings aren't replayed either.
-            if message == Self.missingMessage { state.forget() }
+            if message == Self.missingMessage {
+                setLastGoodOrigin(nil)
+                state.forget()
+            }
             let retry = message == Self.missingMessage ? nil : Date().addingTimeInterval(900)
             return failSignIn(message, stamp: current, retryAfter: retry)
         }
@@ -266,7 +296,12 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
                     return failOther("Claude usage API returned an unexpected response")
                 }
                 clearFailure()
-                return state.succeed(Self.map(decoded, credentials: credentials))
+                let reading = state.succeed(Self.map(decoded, credentials: credentials))
+                setLastGoodOrigin(credentials.origin)
+                // Keychain use went off while this request ran: keep nothing
+                // from it (the switch's own forget may have run before this).
+                if credentials.origin == .keychain && !keychainAllowed() { forgetKeychainSignIn() }
+                return reading
             case 401:
                 clearCachedCredentials()
                 return failSignIn(Self.expiredMessage(credentials.origin), stamp: current,
@@ -301,6 +336,10 @@ public final class ClaudeQuotaSource: QuotaSource, @unchecked Sendable {
     private func failOther(_ message: String, retryAfter: Date? = nil) -> QuotaReading {
         clearFailure()
         return state.fail(message, provider: provider, retryAfter: retryAfter)
+    }
+
+    private func setLastGoodOrigin(_ origin: Origin?) {
+        lock.lock(); lastGoodOrigin = origin; lock.unlock()
     }
 
     private func clearFailure() {

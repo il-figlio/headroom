@@ -187,6 +187,13 @@ public enum QuotaSources {
         await poller.forget()
     }
 
+    /// "Use Claude Code's Keychain sign-in" was turned off: the Claude Code
+    /// source drops a Keychain token and the reading fetched with it now.
+    /// File sign-ins and other sources are untouched.
+    public static func forgetKeychainSignIn() {
+        for case let claude as ClaudeQuotaSource in shared { claude.forgetKeychainSignIn() }
+    }
+
     /// Replaces the Claude Code reading's stale error while a retry runs.
     public static func markClaudeSignInChanged(_ readings: [QuotaReading]) -> [QuotaReading] {
         readings.map { reading in

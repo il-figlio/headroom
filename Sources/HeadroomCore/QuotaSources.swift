@@ -121,6 +121,12 @@ public final class QuotaSourceState: @unchecked Sendable {
         blockedMessage = nil
     }
 
+    /// Drops only the last good reading; a Retry-After gate stays.
+    func dropLastGood() {
+        lock.lock(); defer { lock.unlock() }
+        lastGood = nil
+    }
+
     func succeed(_ reading: QuotaReading) -> QuotaReading {
         lock.lock(); defer { lock.unlock() }
         lastGood = reading
