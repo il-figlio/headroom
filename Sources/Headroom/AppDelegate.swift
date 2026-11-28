@@ -100,6 +100,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         if let notch { notch.openPinned(); return }
         if popover.isShown || fallback?.isVisible == true { closePanel(); return }
         guard let button = status.button else { return }
+        // No display attached (a headless Mac reopened with `open -a` or by
+        // a login item): there is nowhere to show the panel.
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
         monitor.setDetailed(true)
         if let window = button.window, window.isVisible,
            NSScreen.screens.contains(where: { $0.frame.intersects(window.frame) }) {
@@ -110,7 +113,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         } else {
             // macOS can hide menu extras when the menu bar runs out of room.
             // Opening the app from Finder must still give access to its controls.
-            let screen = NSScreen.main ?? NSScreen.screens[0]
             PanelMetrics.setScreen(screen)
             let size = PanelMetrics.size()
             let frame = NSRect(x: screen.visibleFrame.maxX - size.width - 16,
