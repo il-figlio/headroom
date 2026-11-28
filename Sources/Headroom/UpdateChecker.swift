@@ -79,6 +79,8 @@ struct UpdatesMenu: View {
     var body: some View {
         Button("Check for Updates…", action: check).disabled(!updater.canCheck)
         Toggle("Check for updates automatically", isOn: Binding(get: { updater.automaticChecks }, set: updater.setAutomaticChecks))
+        // As in Settings: installing on its own needs automatic checks.
         Toggle("Download and install updates automatically", isOn: Binding(get: { updater.automaticInstalls }, set: updater.setAutomaticInstalls))
+            .disabled(!updater.automaticChecks)
     }
 }

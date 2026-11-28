@@ -50,7 +50,8 @@ struct WelcomeView: View {
                 Divider()
                 option("Open at login", nil, isOn: Binding(get: { monitor.loginEnabled }, set: { _ in monitor.toggleLogin() }))
                 Divider()
-                option("Check for updates automatically", nil,
+                option("Check for updates automatically",
+                       "Updates are signed, and are downloaded and installed automatically. You can change both in Settings → Updates.",
                        isOn: Binding(get: { updater.automaticChecks }, set: updater.setAutomaticChecks))
             }
 
