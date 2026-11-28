@@ -159,6 +159,10 @@ final class MemoryMonitor: ObservableObject {
     /// rate-limits hard, and these windows move slowly anyway.
     private var lastQuotaFetchAt = Date.distantPast
     private var quotaFetchInFlight = false
+    /// Queue-confined. The last poll found no sign-in and cleared the
+    /// readings, the cache file and the sources' memory; set so that isn't
+    /// repeated on every sample until a sign-in shows up again.
+    private var quotasClearedForNoSignIn = false
     /// Claude Code sign-in change checks (metadata only) run at most this often.
     private var lastSignInCheckAt = Date.distantPast
     /// Instant display after relaunch; lives in our own Application Support dir.
@@ -511,41 +515,68 @@ final class MemoryMonitor: ObservableObject {
     /// exist on disk — a machine with no agent CLIs signs in to nothing and
     /// calls nothing. Results merge over what's shown on main (a failed source
     /// keeps its last good windows) and the merged set is cached for instant
-    /// display after relaunch.
+    /// display after relaunch. With no sign-in left (signed out, or Keychain
+    /// use turned off when that was the only one) the card, the cache file
+    /// and what the sources remember are cleared, as when Limits goes off.
     private func pollQuotas(now: Date) {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let present = !QuotaSources.credentialed(home: home).isEmpty
-        DispatchQueue.main.async {
-            guard PanelMetrics.quotaSourcesPresent != present else { return }
-            PanelMetrics.quotaSourcesPresent = present
-            PanelWidgets.shared.changed?()  // hosts resize to fit (or drop) the Limits card
+        DispatchQueue.main.async { self.setQuotaSourcesPresent(present) }
+        guard present else {
+            guard !quotasClearedForNoSignIn else { return }
+            quotasClearedForNoSignIn = true
+            // No poll is in flight (`shouldPoll`), so its save has already
+            // run on this queue and nothing can land after this clean-up.
+            DispatchQueue.main.async { self.quotas = [] }
+            forgetQuotas()
+            return
         }
-        guard present else { return }
+        quotasClearedForNoSignIn = false
         quotaFetchInFlight = true
         lastQuotaFetchAt = now
         Task.detached { [weak self] in
+            // A forget from switching Limits off must not run during this fetch.
+            await QuotaSources.forgettingFinished()
             let readings = await QuotaFetcher.fetchAll(home: home)
+            // The sign-ins can go while the fetch runs; don't show or cache
+            // readings for none.
+            let stillPresent = !QuotaSources.credentialed(home: home).isEmpty
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 // Limits was turned off while this poll ran: drop it.
                 var merged: [QuotaReading]?
                 if AppPreferences.shared.limitsEnabled {
-                    let fresh = QuotaMerge.merge(previous: self.quotas, fresh: readings)
-                    self.quotas = fresh
-                    merged = fresh
+                    if stillPresent {
+                        let fresh = QuotaMerge.merge(previous: self.quotas, fresh: readings)
+                        self.quotas = fresh
+                        merged = fresh
+                    } else {
+                        self.quotas = []
+                        self.setQuotaSourcesPresent(false)
+                    }
                 }
+                let signInsGone = !stillPresent
                 // Enqueued here, on main, where `limitsChanged` enqueues too:
                 // the queue then runs this save and a switch-off's cleanup
                 // in the order they happened, so a save can't follow it.
-                self.quotaFetchFinished(merged)
+                // nil (Limits off, or no sign-in left) deletes the cache
+                // and forgets again instead.
+                self.quotaFetchFinished(merged, signInsGone: signInsGone)
             }
         }
     }
-    /// Queue-confined. Limits is off: delete the cached readings and drop
-    /// what the sources hold in memory (cached token, last good readings).
+    /// Main thread. Hosts resize to fit (or drop) the Limits card.
+    private func setQuotaSourcesPresent(_ present: Bool) {
+        guard PanelMetrics.quotaSourcesPresent != present else { return }
+        PanelMetrics.quotaSourcesPresent = present
+        PanelWidgets.shared.changed?()
+    }
+    /// Queue-confined. Limits is off or no sign-in is left: delete the cached
+    /// readings and drop what the sources hold in memory (cached token, last
+    /// good readings). The next poll waits for that to finish.
     private func forgetQuotas() {
         QuotaCache.remove(Self.quotaCacheURL)
-        Task.detached(priority: .utility) { await QuotaSources.forgetCredentials() }
+        QuotaSources.startForgettingCredentials()
     }
     /// Queue-confined. After a Claude credential failure, a changed sign-in
     /// file or Keychain item (modification dates only, never the secret)
@@ -563,13 +594,19 @@ final class MemoryMonitor: ObservableObject {
         }
     }
     /// Main thread; continues on `queue`: cache the merged set, then allow
-    /// the next poll. `merged` is nil when Limits was off as the poll
-    /// landed: nothing is written, and whatever the poll put back in the
-    /// sources' memory after the switch-off is forgotten again.
-    private func quotaFetchFinished(_ merged: [QuotaReading]?) {
+    /// the next poll. `merged` is nil when Limits was off, or no sign-in was
+    /// left, as the poll landed: nothing is written, and whatever the poll
+    /// put back in the sources' memory is forgotten again. With no sign-in
+    /// left, the next sample looks for one again instead of in 15 minutes.
+    private func quotaFetchFinished(_ merged: [QuotaReading]?, signInsGone: Bool) {
         queue.async { [weak self] in
-            if let merged { QuotaCache.save(merged, to: Self.quotaCacheURL) } else { self?.forgetQuotas() }
-            self?.quotaFetchInFlight = false
+            guard let self else { return }
+            if let merged { QuotaCache.save(merged, to: Self.quotaCacheURL) } else { self.forgetQuotas() }
+            if signInsGone {
+                self.quotasClearedForNoSignIn = true
+                self.lastQuotaFetchAt = .distantPast
+            }
+            self.quotaFetchInFlight = false
         }
     }
 

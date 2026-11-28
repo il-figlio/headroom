@@ -187,6 +187,21 @@ public enum QuotaSources {
         await poller.forget()
     }
 
+    static let forgetting = PendingForget()
+
+    /// `forgetCredentials` without waiting for it: the work runs in the
+    /// background, after any forget started earlier. A poll calls
+    /// `forgettingFinished` before it fetches, so turning Limits off and
+    /// straight back on can't drop what the next fetch caches.
+    public static func startForgettingCredentials() {
+        forgetting.start { await forgetCredentials() }
+    }
+
+    /// Returns once every forget started so far has finished.
+    public static func forgettingFinished() async {
+        await forgetting.wait()
+    }
+
     /// "Use Claude Code's Keychain sign-in" was turned off: the Claude Code
     /// source drops a Keychain token and the reading fetched with it now.
     /// File sign-ins and other sources are untouched.
@@ -202,6 +217,31 @@ public enum QuotaSources {
             marked.error = ClaudeQuotaSource.signInChangedMessage
             return marked
         }
+    }
+}
+
+/// Background forgets, run one after another; `wait` returns once every
+/// forget started before it was called has finished.
+final class PendingForget: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last: Task<Void, Never>?
+
+    func start(_ work: @escaping @Sendable () async -> Void) {
+        lock.lock(); defer { lock.unlock() }
+        let previous = last
+        last = Task.detached(priority: .utility) {
+            await previous?.value
+            await work()
+        }
+    }
+
+    func wait() async {
+        await current()?.value
+    }
+
+    private func current() -> Task<Void, Never>? {
+        lock.lock(); defer { lock.unlock() }
+        return last
     }
 }
 
